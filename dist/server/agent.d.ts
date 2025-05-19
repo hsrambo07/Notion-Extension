@@ -15,6 +15,8 @@ export declare class NotionAgent {
     private state;
     private notionApiToken;
     private notionApiBaseUrl;
+    private isTestEnvironment;
+    private openAiApiKey;
     constructor();
     get(key: string): any;
     set(key: string, value: any): void;
@@ -22,9 +24,19 @@ export declare class NotionAgent {
         content: string;
     }>;
     private isDestructiveAction;
+    private parseWithOpenAI;
+    private parseWithRegex;
     private parseAction;
     private extractPageCandidates;
     private createActionPlan;
+    private processAction;
+    private isRetryableError;
+    private formatErrorMessage;
+    private generateHelpfulResponse;
+    private generateDebugInfo;
+    private deleteBlock;
+    private getPageContent;
+    private getBlockContent;
     private findPageByName;
     private searchPages;
     private extractPageTitle;
@@ -33,8 +45,8 @@ export declare class NotionAgent {
     private updateBlock;
     private findBlocksWithContent;
     private calculateSimilarity;
-    private processAction;
     private getAllPages;
+    private createPage;
 }
 export declare function createAgent(): Promise<NotionAgent>;
 export declare function processChat(input: string, confirm?: boolean): Promise<{

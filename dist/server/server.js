@@ -3,10 +3,28 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { config } from 'dotenv';
 import { spawn } from 'child_process';
-import { validateChatRequest, processChat } from './agent.js';
+import { validateChatRequest, createAgent } from './agent.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { serve } from '@hono/node-server';
+// Load environment variables
 config();
+// Debug environment variables
+console.log('Server environment variables:', {
+    nodeEnv: process.env.NODE_ENV,
+    notionApiToken: process.env.NOTION_API_TOKEN ? 'Set (length: ' + process.env.NOTION_API_TOKEN.length + ')' : 'Not set',
+    openAiApiKey: process.env.OPENAI_API_KEY ? 'Set (length: ' + process.env.OPENAI_API_KEY.length + ')' : 'Not set',
+    port: process.env.PORT || '9000',
+    mcpNotionPort: process.env.MCP_NOTION_PORT || '3333'
+});
+// Create a shared agent instance
+let agentInstance = null;
+async function getAgentInstance() {
+    if (!agentInstance) {
+        console.log('Creating new agent instance');
+        agentInstance = await createAgent();
+    }
+    return agentInstance;
+}
 // Start MCP Notion server if not already running in dev mode
 const startMcpServer = () => {
     if (process.env.NODE_ENV !== 'test') {
@@ -43,13 +61,29 @@ app.get('/', (c) => c.text('Notion Agent API'));
 // Chat endpoint
 app.post('/chat', async (c) => {
     try {
+        console.log('Received chat request');
         const body = await c.req.json();
+        console.log('Request body:', body);
         const validatedRequest = await validateChatRequest(body);
-        const result = await processChat(validatedRequest.input, validatedRequest.confirm);
-        return c.json(result);
+        console.log('Validated request:', validatedRequest);
+        // Get the shared agent instance
+        const agent = await getAgentInstance();
+        // Set confirmation flag if provided
+        if (validatedRequest.confirm) {
+            agent.set('confirm', true);
+        }
+        // Process the request using the agent
+        const response = await agent.chat(validatedRequest.input);
+        console.log('Chat result:', response);
+        // Return the agent's response with confirmation state
+        return c.json({
+            response: response.content,
+            requireConfirm: agent.get('requireConfirm') || false
+        });
     }
     catch (error) {
         console.error('Error processing chat request:', error);
+        console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
         if (error instanceof Error && error.name === 'ZodError') {
             return c.json({ error: 'Invalid request format', details: error.errors }, 400);
         }
@@ -57,7 +91,7 @@ app.post('/chat', async (c) => {
     }
 });
 // Start the server
-const PORT = parseInt(process.env.PORT || '8787', 10);
+const PORT = parseInt(process.env.PORT || '9000', 10);
 if (process.env.NODE_ENV !== 'test') {
     startMcpServer();
     serve({

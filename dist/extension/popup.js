@@ -8,7 +8,7 @@ const confirmationContainer = document.getElementById('confirmation-container');
 const confirmYesButton = document.getElementById('confirm-yes');
 const confirmNoButton = document.getElementById('confirm-no');
 // Base URL for the API - make sure this matches your server
-const API_URL = 'http://localhost:8788';
+const API_URL = 'http://localhost:9000';
 // Current context
 let currentPrompt = '';
 let pendingConfirmation = false;

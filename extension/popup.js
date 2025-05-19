@@ -9,7 +9,7 @@
   var confirmationContainer = document.getElementById("confirmation-container");
   var confirmYesButton = document.getElementById("confirm-yes");
   var confirmNoButton = document.getElementById("confirm-no");
-  var API_URL = "http://localhost:8788";
+  var API_URL = "http://localhost:9000";
   var currentPrompt = "";
   var pendingConfirmation = false;
   runButton.addEventListener("click", async () => {

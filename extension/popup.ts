@@ -9,7 +9,7 @@ const confirmYesButton = document.getElementById('confirm-yes') as HTMLButtonEle
 const confirmNoButton = document.getElementById('confirm-no') as HTMLButtonElement;
 
 // Base URL for the API - make sure this matches your server
-const API_URL = 'http://localhost:8788';
+const API_URL = 'http://localhost:9000';
 
 // Current context
 let currentPrompt = '';

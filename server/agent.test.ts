@@ -87,5 +87,81 @@ describe('Notion Agent', () => {
       expect(confirmedResponse.content).toContain('Created');
       expect(agent.get('requireConfirm')).toBe(false);
     });
+    
+    // New tests for natural language understanding
+    describe('natural language understanding', () => {
+      it('understands different ways to create pages', async () => {
+        // Test various phrasings for create action
+        const createPhrases = [
+          'Create a new page called Project Ideas',
+          'Make a new page named Project Ideas',
+          'Add a page called Project Ideas',
+          'Create Project Ideas page',
+          'I need a new page for Project Ideas'
+        ];
+        
+        for (const phrase of createPhrases) {
+          const response = await agent.chat(phrase);
+          expect(response.content).toContain('CONFIRM?');
+          expect(agent.get('requireConfirm')).toBe(true);
+          
+          // Reset state for next test
+          agent.set('requireConfirm', false);
+        }
+      });
+      
+      it('parses command intents correctly', () => {
+        const testCases = [
+          {
+            input: 'Write "Test content" in TEST MCP page',
+            expectedAction: 'write'
+          },
+          {
+            input: 'Edit "old text" to "new text" in TEST MCP',
+            expectedAction: 'edit'
+          },
+          {
+            input: 'Create a new page called Project Ideas',
+            expectedAction: 'create'
+          }
+        ];
+        
+        for (const testCase of testCases) {
+          // We'll directly test the parseAction method
+          const actionPromise = agent['parseAction'](testCase.input);
+          expect(actionPromise).resolves.toHaveProperty('action', testCase.expectedAction);
+        }
+      });
+      
+      it('handles debug requests appropriately', async () => {
+        const response = await agent.chat('Show debug information');
+        // Debug requests should not require confirmation
+        expect(agent.get('requireConfirm')).toBe(false);
+        // Should include debug info in response
+        expect(response.content).toContain('Debug Information');
+      });
+      
+      // New test cases for problematic patterns
+      describe('handles tricky patterns correctly', () => {
+        it('correctly handles "In Notion, write X in Y" pattern', async () => {
+          const parsedAction = await agent['parseAction']('In Notion, write "My shopping list" in TEST MCP');
+          expect(parsedAction.action).toBe('write');
+          expect(parsedAction.content).toBe('My shopping list');
+          // We'll allow any page title value except "Notion"
+          expect(parsedAction.pageTitle).not.toBe('Notion');
+          expect(parsedAction.pageTitle).toBeDefined();
+        });
+        
+        it('strips "page" suffix from page names', async () => {
+          const parsedAction = await agent['parseAction']('Write "Hello" in TEST MCP page');
+          expect(parsedAction.pageTitle).toBe('TEST MCP');
+        });
+        
+        it('never uses "Notion" as a page name', async () => {
+          const parsedAction = await agent['parseAction']('In Notion, write "test content"');
+          expect(parsedAction.pageTitle).not.toBe('Notion');
+        });
+      });
+    });
   });
 }); 
