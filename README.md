@@ -1,21 +1,96 @@
 # Notion Agent Chrome Extension
 
-A Chrome extension that lets you control Notion with natural language commands using SpinAI and MCP Notion Server.
+A Chrome extension that lets you control Notion with natural language commands. This extension acts as an intelligent agent between you and Notion, allowing you to create pages, add content, format text, and organize your workspace with simple language instructions.
 
-## Features
+## 🌟 Features
 
-- 💬 Send natural language commands to Notion through a simple UI
-- ✅ Confirmation for destructive actions before execution
-- 🔄 Real-time responses from a local server
+- 💬 **Natural Language Processing**: Send conversational commands like "Create a page called Project Notes in Work and add checklist to follow up with team"
+- 📝 **Smart Content Placement**: Add content to specific sections within pages ("Add this task under Today's Priorities section")
+- 🔄 **Multi-Part Commands**: Execute complex operations in a single instruction ("Create a page called Weekly Goals and add a bullet list with exercise daily, read more, meditate")
+- ✅ **Content Formatting**: Automatically format content as checklists, bullet points, quotes, callouts, or paragraphs
+- 🛡️ **Action Confirmation**: Safeguard against destructive actions with confirmation dialogs
+- 🔄 **Real-time Responses**: Get instant feedback through a local server architecture
 
-## Prerequisites
+## 🏗️ System Architecture
+
+The Notion Agent operates through a multi-component system:
+
+```
+┌───────────────────┐     ┌─────────────────┐     ┌────────────────────┐
+│  Chrome Extension │     │   Agent Server  │     │     Notion API      │
+│  ┌─────────────┐  │     │  ┌───────────┐  │     │  ┌──────────────┐  │
+│  │   Popup UI  │  │     │  │Notion Agent│  │     │  │  Workspace   │  │
+│  │   ┌─────┐   │◄─┼────►│  │  ┌─────┐   │◄─┼────►│  │  ┌────────┐  │  │
+│  │   │Input│   │  │     │  │  │Parse│   │  │     │  │  │  Pages │  │  │
+│  │   └─────┘   │  │ REST│  │  └─────┘   │  │ REST│  │  └────────┘  │  │
+│  │   ┌─────┐   │  │ API │  │  ┌─────┐   │  │ API │  │  ┌────────┐  │  │
+│  │   │Output│◄─┼──┼─────┼──┼──┤Exec │   │  │     │  │  │ Blocks │  │  │
+│  │   └─────┘   │  │     │  │  └─────┘   │  │     │  │  └────────┘  │  │
+│  └─────────────┘  │     │  │           │  │     │  └──────────────┘  │
+└───────────────────┘     │  │  ┌─────┐   │  │     └────────────────────┘
+                          │  │  │Format│   │  │
+      ┌───────────────┐   │  │  │Agent │   │  │
+      │  OpenAI API   │   │  │  └─────┘   │  │
+      │ ┌───────────┐ │   │  └───────────┘  │
+      │ │  GPT-4o   │◄┼───┼─────────────────┘
+      │ └───────────┘ │   └─────────────────┘
+      └───────────────┘
+```
+
+### Component Workflow
+1. **User Input**: The Chrome extension accepts natural language commands through the popup UI
+2. **Request Processing**: Commands are sent to the Agent Server via REST API
+3. **Command Parsing**: The NotionAgent component uses OpenAI to parse the natural language into structured actions
+4. **Action Planning**: The system creates a plan based on the parsed intent (create, write, edit, etc.)
+5. **Format Processing**: The FormatAgent determines how content should be formatted in Notion
+6. **Notion API Interaction**: Structured commands are translated into Notion API calls
+7. **Response**: Results are returned to the extension for display to the user
+
+## ⚙️ Technical Implementation
+
+### Agents
+
+#### 1. Notion Agent
+The core component that:
+- Parses natural language into structured commands
+- Detects multi-part commands (e.g., "create page X and add Y")
+- Finds relevant pages and sections in your Notion workspace
+- Executes operations through the Notion API
+- Handles error conditions and retries
+
+#### 2. Format Agent
+Specializes in content formatting:
+- Converts plain text into structured Notion blocks
+- Supports multiple format types: paragraphs, bullets, checklists, callouts, code blocks, etc.
+- Uses context to infer appropriate formatting when not explicitly specified
+
+### Natural Language Processing
+The extension uses a two-tier approach to understand commands:
+1. **Primary**: OpenAI's GPT-4o model processes commands with a specialized prompt
+2. **Fallback**: Regex-based pattern matching for basic command processing when API is unavailable
+
+### Section-Based Content Placement
+Content can be placed in specific sections within pages using:
+1. **Two-Pass Search**: Looks for exact section matches first, then falls back to partial matches
+2. **Contextual Hints**: Recognizes phrases like "under X section" or "in Y heading"
+3. **Common Section Recognition**: Special handling for common section names like "My Day", "Tasks", etc.
+
+### Multi-Part Command Processing
+The system can handle compound instructions through:
+1. **Command Segmentation**: Splitting instructions at logical boundaries (e.g., "and add", "and write")
+2. **Intent Preservation**: Maintaining the context across command segments
+3. **Sequential Execution**: Creating a page first, then adding content in the specified format
+
+## 🛠️ Setup
+
+### Prerequisites
 
 - Node.js v18 or newer
 - pnpm package manager
 - A Notion integration token
 - OpenAI API key
 
-## Setup
+### Installation
 
 1. Clone this repository:
 ```bash
@@ -36,15 +111,18 @@ PORT=8787
 MCP_NOTION_PORT=3333
 ```
 
-### Getting a Notion Integration Token
+### Notion Integration Setup
 
 1. Go to [https://www.notion.so/my-integrations](https://www.notion.so/my-integrations)
 2. Click "New integration"
 3. Give it a name and select the workspace
 4. Copy the "Internal Integration Token" and add it to your `.env` file
 5. In your Notion workspace, share the pages/databases you want to access with your integration
+   - Open a page in your workspace
+   - Click "Share" in the top right
+   - Click "Invite" and select your integration from the list
 
-## Development
+## 💻 Development
 
 Start the development server:
 
@@ -56,22 +134,28 @@ This will start:
 - MCP Notion server on port 3333
 - Backend API server on port 8787
 
-## Loading the Chrome Extension
+## 📲 Loading the Chrome Extension
 
 1. Open Chrome and navigate to `chrome://extensions/`
 2. Enable "Developer mode" (toggle in the top-right corner)
 3. Click "Load unpacked" and select the `extension` folder
 4. The Notion Agent extension should now appear in your extensions list 
 
-## Usage
+## 🚀 Usage Examples
 
-1. Click on the Notion Agent extension icon in your browser
-2. Type a natural language command in the textarea (e.g., "Create a new TODO page called 'Hello World'")
-3. Click "Run" to send the command
-4. If the action requires confirmation, you'll see a prompt to confirm or cancel
-5. After confirmation, the action will be executed in your Notion workspace
+### Basic Commands
 
-## Testing
+- **Create a page**: "Create a new page called Weekly Tasks"
+- **Add content**: "Add 'Meeting with Alex at 3pm' to my Today page"
+- **Format content**: "Add a bullet list with apples, oranges, bananas to Shopping List"
+
+### Advanced Usage
+
+- **Multi-part commands**: "Create a page called Q3 Goals in Work and add checklist to finish project, hire new developer, update documentation"
+- **Section-specific placement**: "Add 'Call accountant' under Important section in Tasks page"
+- **Content formatting**: "Add as toggle 'Project Details: Launching in September with initial beta access for partners'"
+
+## 🧪 Testing
 
 Run the test suite with:
 
@@ -79,7 +163,17 @@ Run the test suite with:
 pnpm test
 ```
 
-## Troubleshooting
+For testing specific components:
+
+```bash
+# Test multi-part command handling
+NODE_ENV=production node test-multipart-commands.js
+
+# Test section placement functionality
+NODE_ENV=production node test-section-placement.js
+```
+
+## 🔍 Troubleshooting
 
 ### CORS Issues
 - Make sure the server is running on the expected port (8787)
@@ -89,9 +183,76 @@ pnpm test
 - Verify your Notion token and OpenAI API key in the `.env` file
 - Ensure your Notion integration has access to the pages/databases you're trying to modify
 
-### Mixed Content Errors
-- The extension should connect to localhost over HTTP, which is allowed in the content security policy
+### Section Placement Issues
+- Check that section names match exactly (including capitalization)
+- Try using more specific section names if you have similar headings
 
-## License
+### Multi-part Commands
+- Make sure commands have a clear separation ("and add", "and write")
+- For checklists, include "to" before the action (e.g., "add checklist to read books")
+
+## 🔄 Workflow Internals
+
+```
+┌──────────────┐
+│ User Request │
+└───────┬──────┘
+        ▼
+┌───────────────────┐     ┌─────────────────┐
+│ Parse Action       │────►  Is Destructive? │
+└───────┬───────────┘     └────────┬────────┘
+        │                          │
+        │                          ▼
+        │                   ┌─────────────┐
+        │                   │ Confirmation│
+        │                   └──────┬──────┘
+        │                          │
+        ▼                          ▼
+┌───────────────────┐     ┌───────────────┐
+│ Create Action Plan│◄────┤ User Confirms │
+└───────┬───────────┘     └───────────────┘
+        │
+        ▼
+┌───────────────────┐     ┌───────────────┐
+│ Process Multi-part│────►│ Create Page   │
+│ Commands          │     └───────┬───────┘
+└───────────────────┘             │
+        │                         ▼
+        │                ┌─────────────────┐
+        └───────────────►│ Add Content     │
+                         └───────┬─────────┘
+                                 │
+                                 ▼
+                        ┌─────────────────────┐
+                        │ Format Content      │
+                        │ (Checklist, Bullet, │
+                        │  Toggle, etc.)      │
+                        └───────┬─────────────┘
+                                │
+                                ▼
+                        ┌─────────────────────┐
+                        │ Place in Section    │
+                        │ (if specified)      │
+                        └───────┬─────────────┘
+                                │
+                                ▼
+                        ┌─────────────────────┐
+                        │ Return Response     │
+                        └─────────────────────┘
+```
+
+## 📝 Supported Command Types
+
+| Command Type | Example | Description |
+|--------------|---------|-------------|
+| Create | "Create a page called Project Notes" | Creates a new page |
+| Write | "Write 'Meeting notes from today' in Work Journal" | Adds content to an existing page |
+| Edit | "Edit 'old text' to 'new text' in Notes" | Modifies existing content |
+| Format | "Add a checklist with item 1, item 2, item 3" | Creates formatted content |
+| Section | "Add 'Follow up' under Today section" | Places content in a specific section |
+| Multi-part | "Create Weekly Goals and add bullet list with exercise, read, meditate" | Combines multiple operations |
+| Debug | "Show debug info" | Displays system information |
+
+## 🔗 License
 
 ISC 
