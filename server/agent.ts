@@ -840,11 +840,12 @@ export class NotionAgent {
           if (!result || !result.id) {
             console.warn('Failed to get page ID from creation result, cannot add content');
           } else {
-            console.log(`Step 2: Adding content to newly created page`);
-            const pageId = result.id;
+            console.log(`Step 2: Adding content to newly created page "${pageTitle}"`);
+            const createdPageId = result.id;
             
-            await this.writeToPage(
-              pageId, 
+            // Adding the content to the newly created page
+            const contentResult = await this.writeToPage(
+              createdPageId, 
               params.content, 
               params.formatType || 'paragraph', 
               params.sectionTitle
@@ -969,7 +970,9 @@ export class NotionAgent {
             case 'create':
               const createPlan = await this.createActionPlan('create', {
                 pageTitle: action.pageTitle,
-                parentPage: action.parentPage
+                parentPage: action.parentPage,
+                content: action.content,
+                formatType: action.formatType
               });
               return createPlan.message;
               
