@@ -571,8 +571,12 @@ export class NotionAgent {
       if (input.toLowerCase().includes('cool plugins')) {
         target = 'Cool Plugins';
       } else if (input.toLowerCase().includes('resources')) {
-        target = 'Resources';
+        target = 'Resources Gallery';
+      } else if (input.toLowerCase().includes('personal thoughts')) {
+        target = 'Personal Thoughts';
       }
+      
+      console.log(`Special handling for LinkedIn URL: ${linkedinUrl}, target: ${target}`);
       
       return {
         action: 'write',
@@ -1348,6 +1352,27 @@ export class NotionAgent {
   private async findPageByName(name: string): Promise<string | null> {
     console.log(`Searching for page with exact name: "${name}"`);
     
+    // Special handling for known database/gallery names
+    const knownDatabases = {
+      'Cool Plugins': ['cool plugins', 'plugins', 'cool-plugins'],
+      'Resources Gallery': ['resources', 'resources gallery', 'gallery'],
+      'Resources': ['resources'],
+      'Personal Thoughts': ['personal thoughts', 'personal', 'thoughts']
+    };
+    
+    let searchQuery = name;
+    let originalName = name;
+    
+    // Check if this is a known database with aliases
+    for (const [dbName, aliases] of Object.entries(knownDatabases)) {
+      if (aliases.includes(name.toLowerCase())) {
+        console.log(`Recognized "${name}" as known database: "${dbName}"`);
+        searchQuery = dbName;
+        originalName = dbName;
+        break;
+      }
+    }
+    
     // Use mock implementation for tests
     if (this.isTestEnvironment) {
       console.log(`Test environment detected, returning mock page ID for "${name}"`);
@@ -1356,7 +1381,7 @@ export class NotionAgent {
     }
     
     try {
-      console.log(`Making API request to find page "${name}"`);
+      console.log(`Making API request to find page "${searchQuery}"`);
       const response = await fetch(`${this.notionApiBaseUrl}/search`, {
         method: 'POST',
         headers: {
@@ -1365,7 +1390,7 @@ export class NotionAgent {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          query: name,
+          query: searchQuery,
           filter: {
             property: 'object',
             value: 'page'
@@ -1382,16 +1407,41 @@ export class NotionAgent {
       
       // The JSON response has results array of pages
       const data = await response.json();
-      console.log(`Found ${data.results.length} results for query "${name}"`);
+      console.log(`Found ${data.results.length} results for query "${searchQuery}"`);
+      
+      // Log all page titles for debugging
+      if (data.results.length > 0) {
+        console.log('Available pages:');
+        for (const page of data.results) {
+          const title = this.extractPageTitle(page);
+          console.log(`- "${title}" (${page.id})`);
+        }
+      }
       
       // Process results to find exact matches first
       // @ts-ignore - Temporarily ignore type issue until we can fix it properly
       for (const page of data.results) {
         const pageTitle = this.extractPageTitle(page);
         
-        if (pageTitle && pageTitle.toLowerCase() === name.toLowerCase()) {
+        if (pageTitle && pageTitle.toLowerCase() === searchQuery.toLowerCase()) {
           console.log(`Found exact match: "${pageTitle}" (${page.id})`);
           return page.id;
+        }
+      }
+      
+      // Check for matches to known database aliases
+      // @ts-ignore
+      for (const page of data.results) {
+        const pageTitle = this.extractPageTitle(page);
+        
+        if (!pageTitle) continue;
+        
+        // Check if this page matches any known database
+        for (const [dbName, aliases] of Object.entries(knownDatabases)) {
+          if (aliases.includes(pageTitle.toLowerCase()) || pageTitle.toLowerCase() === dbName.toLowerCase()) {
+            console.log(`Found database match: "${pageTitle}" (${page.id}) for "${originalName}"`);
+            return page.id;
+          }
         }
       }
       
@@ -1401,7 +1451,7 @@ export class NotionAgent {
         const pageTitle = this.extractPageTitle(page);
         
         // For "TEST MCP" we want to be more lenient
-        if (name.toLowerCase() === 'test mcp' && 
+        if (searchQuery.toLowerCase() === 'test mcp' && 
             pageTitle && 
             pageTitle.toLowerCase().includes('test') && 
             pageTitle.toLowerCase().includes('mcp')) {
@@ -1410,15 +1460,33 @@ export class NotionAgent {
         }
         
         // Special case for "Bruh"
-        if (name.toLowerCase() === 'bruh' && 
+        if (searchQuery.toLowerCase() === 'bruh' && 
             pageTitle && 
             pageTitle.toLowerCase() === 'bruh') {
           console.log(`Found Bruh match: "${pageTitle}" (${page.id})`);
           return page.id;
         }
         
+        // Special case for "Cool Plugins"
+        if ((searchQuery.toLowerCase() === 'cool plugins' || originalName.toLowerCase() === 'cool plugins') && 
+            pageTitle && 
+            (pageTitle.toLowerCase().includes('cool') && 
+             pageTitle.toLowerCase().includes('plugin'))) {
+          console.log(`Found Cool Plugins match: "${pageTitle}" (${page.id})`);
+          return page.id;
+        }
+        
+        // Special case for "Resources Gallery"
+        if ((searchQuery.toLowerCase().includes('resources') || originalName.toLowerCase().includes('resources')) && 
+            pageTitle && 
+            (pageTitle.toLowerCase().includes('resources') || 
+             pageTitle.toLowerCase().includes('gallery'))) {
+          console.log(`Found Resources match: "${pageTitle}" (${page.id})`);
+          return page.id;
+        }
+        
         // Check for high similarity
-        if (pageTitle && this.calculateSimilarity(pageTitle.toLowerCase(), name.toLowerCase()) > 0.8) {
+        if (pageTitle && this.calculateSimilarity(pageTitle.toLowerCase(), searchQuery.toLowerCase()) > 0.7) {
           console.log(`Found similar match: "${pageTitle}" (${page.id})`);
           return page.id;
         }
