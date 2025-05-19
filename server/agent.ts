@@ -523,7 +523,9 @@ export class NotionAgent {
     parentPage?: string;
     formatType?: string;
     sectionTitle?: string;
-    debug?: boolean 
+    debug?: boolean;
+    isUrl?: boolean;
+    isDatabaseEntry?: boolean;
   }> {
     console.log(`Parsing action from: "${input}"`);
     
@@ -544,6 +546,44 @@ export class NotionAgent {
       }
     }
     
+    // Check if the input is trying to add a URL or link
+    const urlPattern = /(https?:\/\/[^\s]+)/g;
+    const urlMatches = input.match(urlPattern);
+    const isAddingLink = urlMatches && urlMatches.length > 0 && 
+                          (input.toLowerCase().includes('add') || 
+                           input.toLowerCase().includes('save') ||
+                           input.toLowerCase().includes('put'));
+    
+    // Check if this appears to be a database or gallery entry
+    const isDatabaseEntry = input.toLowerCase().includes('in cool plugins') || 
+                            input.toLowerCase().includes('to cool plugins') ||
+                            input.toLowerCase().includes('to resources') ||
+                            input.toLowerCase().includes('in resources') ||
+                            input.toLowerCase().includes('gallery') ||
+                            input.toLowerCase().includes('database');
+    
+    // Special handling for LinkedIn URLs being added to databases
+    if (isAddingLink && urlMatches && urlMatches.some(url => url.includes('linkedin.com'))) {
+      const linkedinUrl = urlMatches.find(url => url.includes('linkedin.com'));
+      
+      // Determine target from input
+      let target = 'Cool Plugins';
+      if (input.toLowerCase().includes('cool plugins')) {
+        target = 'Cool Plugins';
+      } else if (input.toLowerCase().includes('resources')) {
+        target = 'Resources';
+      }
+      
+      return {
+        action: 'write',
+        content: linkedinUrl,
+        pageTitle: target,
+        formatType: 'bookmark',
+        isUrl: true,
+        isDatabaseEntry
+      };
+    }
+    
     // Try to use OpenAI if available, otherwise fall back to regex
     let parsedAction;
     
@@ -552,6 +592,18 @@ export class NotionAgent {
         // Try parsing with OpenAI
         parsedAction = await this.parseWithOpenAI(input);
         console.log('Parsed action:', parsedAction);
+        
+        // If the content appears to be a URL, set formatType to 'bookmark'
+        if (parsedAction.content && urlPattern.test(parsedAction.content.trim())) {
+          parsedAction.formatType = 'bookmark';
+          parsedAction.isUrl = true;
+          
+          // If this is likely a database entry, set the flag
+          if (isDatabaseEntry || 
+              (parsedAction.pageTitle && ['Cool Plugins', 'Resources', 'Gallery'].includes(parsedAction.pageTitle))) {
+            parsedAction.isDatabaseEntry = true;
+          }
+        }
         
         // Check for location-based placement (section)
         if (!parsedAction.sectionTitle) {
@@ -807,6 +859,50 @@ export class NotionAgent {
       // For ease of messages
       const pageName = pageTitle || 'the page';
       
+      // Special handling for database entries
+      if (params.isDatabaseEntry && action === 'write' && params.isUrl) {
+        console.log(`Adding URL to database/gallery: "${params.content}" to "${pageTitle}"`);
+        
+        // First check if we need to create a new database entry or update an existing one
+        try {
+          // For database entries, we need to create a page first and then add the URL
+          const newEntry = await this.createDatabaseEntry(pageId, params.content);
+          
+          if (!newEntry || !newEntry.id) {
+            return {
+              success: false,
+              result: null,
+              message: `Failed to create database entry in "${pageTitle}". Database might be read-only or have required properties.`
+            };
+          }
+          
+          // Now add the URL as content to this new page
+          await this.writeToPage(
+            newEntry.id,
+            params.content,
+            'bookmark'
+          );
+          
+          return {
+            success: true,
+            result: newEntry,
+            message: `Added ${params.content} as a new entry in database "${pageTitle}".`
+          };
+        } catch (error) {
+          console.error('Error adding to database:', error);
+          
+          // Fallback to adding as normal content if database entry creation fails
+          console.log('Falling back to adding URL as normal content');
+          const result = await this.writeToPage(pageId, params.content, 'bookmark');
+          
+          return {
+            success: true,
+            result: result,
+            message: `Added ${params.content} to "${pageTitle}" as a bookmark. Note: Could not add directly to database view (${error.message}).`
+          };
+        }
+      }
+      
       // Execute the appropriate action
       if (action === 'create') {
         console.log(`Step 1: Creating a new page named "${pageTitle}"`);
@@ -946,7 +1042,9 @@ export class NotionAgent {
                 pageTitle: action.pageTitle,
                 content: action.content,
                 formatType: action.formatType,
-                sectionTitle: action.sectionTitle
+                sectionTitle: action.sectionTitle,
+                isUrl: action.isUrl,
+                isDatabaseEntry: action.isDatabaseEntry
               });
               return writePlan.message;
               
@@ -955,7 +1053,9 @@ export class NotionAgent {
                 pageTitle: action.pageTitle,
                 content: action.content,
                 formatType: action.formatType,
-                sectionTitle: action.sectionTitle
+                sectionTitle: action.sectionTitle,
+                isUrl: action.isUrl,
+                isDatabaseEntry: action.isDatabaseEntry
               });
               return appendPlan.message;
               
@@ -2153,6 +2253,174 @@ export class NotionAgent {
     scoredPages.sort((a, b) => b.score - a.score);
     
     return scoredPages[0];
+  }
+  
+  // Create a new entry in a database
+  private async createDatabaseEntry(databaseId: string, url: string): Promise<any> {
+    console.log(`Creating new database entry in database ${databaseId} for URL: ${url}`);
+    
+    // Use mock implementation for tests
+    if (this.isTestEnvironment) {
+      console.log(`Test environment detected, mocking database entry creation`);
+      return {
+        id: `test-db-entry-id-${Date.now()}`,
+        url: url,
+        object: 'page'
+      };
+    }
+    
+    try {
+      // First, determine if this is a database and what properties it has
+      const response = await fetch(`${this.notionApiBaseUrl}/databases/${databaseId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28'
+        }
+      });
+      
+      if (!response.ok) {
+        // If this isn't a database or we can't access it, this might be a page that contains a database
+        // Let's try to find the database within the page
+        console.log(`ID ${databaseId} is not directly a database, checking if it's a page containing a database`);
+        return await this.createEntryInPageDatabase(databaseId, url);
+      }
+      
+      const database = await response.json();
+      console.log(`Found database with title: "${this.extractDatabaseTitle(database)}"`);
+      
+      // Create properties object based on database schema
+      const properties: any = {};
+      
+      // Title property is required - find the name of the title property
+      let titlePropertyName = 'Name'; // Default
+      for (const [propName, propDetails] of Object.entries(database.properties)) {
+        if (propDetails.type === 'title') {
+          titlePropertyName = propName;
+          break;
+        }
+      }
+      
+      // Extract domain from URL for title
+      let title = url;
+      try {
+        const urlObj = new URL(url);
+        const domain = urlObj.hostname.replace('www.', '');
+        if (domain.includes('linkedin.com')) {
+          // For LinkedIn, extract username from URL
+          const pathParts = urlObj.pathname.split('/');
+          const username = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2] || '';
+          title = `LinkedIn: ${username}`;
+        } else {
+          title = domain;
+        }
+      } catch (e) {
+        console.log('Error parsing URL, using full URL as title');
+      }
+      
+      // Set title property
+      properties[titlePropertyName] = {
+        title: [
+          {
+            text: {
+              content: title
+            }
+          }
+        ]
+      };
+      
+      // Look for URL property to set the URL
+      for (const [propName, propDetails] of Object.entries(database.properties)) {
+        if (propDetails.type === 'url') {
+          properties[propName] = { url };
+          break;
+        }
+      }
+      
+      // Create the database entry
+      const createResponse = await fetch(`${this.notionApiBaseUrl}/pages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          parent: {
+            database_id: databaseId
+          },
+          properties
+        })
+      });
+      
+      if (!createResponse.ok) {
+        const errorData = await createResponse.json();
+        console.error('Notion API error creating database entry:', errorData);
+        throw new Error(`Failed to create database entry: ${createResponse.status} ${createResponse.statusText}`);
+      }
+      
+      return await createResponse.json();
+      
+    } catch (error) {
+      console.error('Error creating database entry:', error);
+      throw error;
+    }
+  }
+  
+  // Create an entry in a database contained within a page
+  private async createEntryInPageDatabase(pageId: string, url: string): Promise<any> {
+    console.log(`Looking for database within page ${pageId}`);
+    
+    try {
+      // Get the page blocks to find database blocks
+      const blocksResponse = await fetch(`${this.notionApiBaseUrl}/blocks/${pageId}/children?page_size=100`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28'
+        }
+      });
+      
+      if (!blocksResponse.ok) {
+        throw new Error(`Failed to get page blocks: ${blocksResponse.status} ${blocksResponse.statusText}`);
+      }
+      
+      const data = await blocksResponse.json();
+      
+      // Find database blocks
+      const databaseBlocks = data.results.filter((block: any) => 
+        block.type === 'child_database' || 
+        (block.type === 'collection_view' || block.type === 'collection_view_page')
+      );
+      
+      if (databaseBlocks.length === 0) {
+        throw new Error(`No database found on page ${pageId}`);
+      }
+      
+      console.log(`Found ${databaseBlocks.length} database(s) on page ${pageId}`);
+      
+      // Use the first database found
+      const databaseBlock = databaseBlocks[0];
+      const databaseId = databaseBlock.id;
+      
+      // Now create an entry in this database
+      return await this.createDatabaseEntry(databaseId, url);
+      
+    } catch (error) {
+      console.error(`Error finding database in page ${pageId}:`, error);
+      throw error;
+    }
+  }
+  
+  // Extract database title
+  private extractDatabaseTitle(database: any): string {
+    if (!database || !database.title) return 'Untitled Database';
+    
+    if (Array.isArray(database.title)) {
+      return database.title.map((t: any) => t.plain_text || '').join('');
+    }
+    
+    return database.title.toString();
   }
 }
 

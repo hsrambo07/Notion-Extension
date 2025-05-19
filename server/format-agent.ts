@@ -41,15 +41,18 @@ export class FormatAgent {
         - quote
         - code
         - callout
+        - bookmark (for URLs and links)
         
         For each block, provide the proper Notion API structure. For example:
         - A toggle with to-do items inside should be a toggle block with children that are to_do blocks
         - A bulleted list should be multiple bulleted_list_item blocks
+        - A URL should be a bookmark block
         
         Pay special attention to content that:
         1. Contains hyphens or dashes (-) which likely indicate list items
         2. Mentions "checklist" or "to-do" which should become to_do blocks
         3. References "toggle" which should become toggle blocks with appropriate children
+        4. Is a URL (starts with http:// or https://) which should become a bookmark block
         
         IMPORTANT RULES:
         1. When the content includes phrases like "checklist" and "toggle" together, the user likely wants a toggle list that CONTAINS checklist/to-do items
@@ -60,6 +63,15 @@ export class FormatAgent {
         6. Pay special attention to content after a colon (:) as it often contains the items to include
         7. When the format is specified as "checklist" or "to-do" and there are no clear separators like dashes, treat the entire content as a single checklist item unless explicitly instructed otherwise
         8. When a request contains "as checklist" followed by location information like "under X section" or "in Y page", focus on creating the checklist item first. Do NOT convert it to a heading just because it mentions a section or title
+        9. When the content is a URL (e.g., https://linkedin.com/in/username), ALWAYS use a bookmark block with the following structure:
+           {
+             "object": "block",
+             "type": "bookmark",
+             "bookmark": {
+               "url": "https://linkedin.com/in/username"
+             }
+           }
+        10. When a format hint is "link", "url", or "bookmark", always use a bookmark block regardless of the content
 
         For example, with "add hey, let's connect as checklist under My Day title section in journal page", create:
         [
@@ -69,6 +81,17 @@ export class FormatAgent {
             "to_do": {
               "rich_text": [{"type": "text", "text": {"content": "hey, let's connect"}}],
               "checked": false
+            }
+          }
+        ]
+
+        Example structure for a bookmark:
+        [
+          {
+            "object": "block",
+            "type": "bookmark",
+            "bookmark": {
+              "url": "https://www.linkedin.com/in/username/"
             }
           }
         ]
@@ -215,6 +238,22 @@ export class FormatAgent {
    * @returns Array of Notion blocks
    */
   private fallbackFormatting(content: string, formatHint?: string): any[] {
+    // Check if the content is a URL
+    const urlPattern = /^(https?:\/\/[^\s]+)$/;
+    const isUrl = urlPattern.test(content.trim());
+    
+    // If content is a URL and the format hint is link/bookmark or undefined, create a bookmark block
+    if (isUrl || (formatHint && ['link', 'url', 'bookmark'].includes(formatHint.toLowerCase()))) {
+      console.log('Creating bookmark block for URL: ', content);
+      return [{
+        object: 'block',
+        type: 'bookmark',
+        bookmark: {
+          url: content.trim()
+        }
+      }];
+    }
+    
     // Default to paragraph if no hint is provided
     if (!formatHint) {
       return [{
