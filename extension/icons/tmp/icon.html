@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Icons</title>
+    <style>
+        body { margin: 0; padding: 20px; font-family: Arial; }
+        canvas { border: 1px solid #ccc; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h2>Icon Generator</h2>
+    <canvas id="icon16" width="16" height="16"></canvas>
+    <a id="download16" href="#" download="icon16.png">Download 16x16</a>
+    <br>
+    <canvas id="icon48" width="48" height="48"></canvas>
+    <a id="download48" href="#" download="icon48.png">Download 48x48</a>
+    <br>
+    <canvas id="icon128" width="128" height="128"></canvas>
+    <a id="download128" href="#" download="icon128.png">Download 128x128</a>
+
+    <script>
+        function drawIcon(canvas, size) {
+            const ctx = canvas.getContext('2d');
+            
+            // Background
+            ctx.fillStyle = '#2F3437';
+            ctx.fillRect(0, 0, size, size);
+            
+            // "N" letter for Notion
+            ctx.fillStyle = '#FFFFFF';
+            const padding = size * 0.2;
+            const width = size - (padding * 2);
+            const height = size - (padding * 2);
+            
+            // Draw the "N" shape
+            ctx.beginPath();
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, padding + height);
+            ctx.lineTo(padding + (width * 0.3), padding + height);
+            ctx.lineTo(padding + width, padding);
+            ctx.lineTo(padding + width, padding + height);
+            ctx.lineTo(padding + (width * 0.7), padding + height);
+            ctx.lineTo(padding, padding);
+            ctx.fill();
+            
+            // Generate download URL
+            const dataUrl = canvas.toDataURL('image/png');
+            document.getElementById('download' + size).href = dataUrl;
+        }
+        
+        // Draw icons of different sizes
+        drawIcon(document.getElementById('icon16'), 16);
+        drawIcon(document.getElementById('icon48'), 48);
+        drawIcon(document.getElementById('icon128'), 128);
+    </script>
+</body>
+</html> 

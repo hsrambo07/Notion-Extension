@@ -1,0 +1,2 @@
+🚀 Server running on http://localhost:8788
+📝 MCP Notion server running on port 3333
