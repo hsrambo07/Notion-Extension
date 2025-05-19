@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch, { Response } from 'node-fetch';
+import { FormatAgent, createFormatAgent } from './format-agent.js';
 
 // Load environment variables from parent directory first, then from current directory
 config({ path: path.join(process.cwd(), '..', '.env') });
@@ -30,12 +31,14 @@ export class NotionAgent {
   private notionApiBaseUrl = 'https://api.notion.com/v1';
   private isTestEnvironment: boolean;
   private openAiApiKey: string;
+  private formatAgent: FormatAgent | null;
   
   constructor() {
     this.state = new Map<string, any>();
     this.notionApiToken = process.env.NOTION_API_TOKEN || '';
     this.openAiApiKey = process.env.OPENAI_API_KEY || '';
     this.isTestEnvironment = process.env.NODE_ENV === 'test';
+    this.formatAgent = null;
     
     console.log('Environment variables:', {
       nodeEnv: process.env.NODE_ENV,
@@ -51,6 +54,19 @@ export class NotionAgent {
     
     if (!this.openAiApiKey && !this.isTestEnvironment) {
       console.warn("Warning: OPENAI_API_KEY is not set in environment variables");
+    }
+    
+    // Initialize the format agent
+    this.initFormatAgent();
+  }
+  
+  // Initialize the format agent
+  private async initFormatAgent(): Promise<void> {
+    if (this.openAiApiKey) {
+      this.formatAgent = await createFormatAgent(this.openAiApiKey);
+      console.log('Format agent initialized');
+    } else {
+      console.warn('No OpenAI API key available, format agent not initialized');
     }
   }
   
@@ -127,6 +143,7 @@ export class NotionAgent {
     oldContent?: string;
     newContent?: string;
     parentPage?: string;
+    formatType?: string;
     debug?: boolean;
   }> {
     // Return mock data for test environment
@@ -312,6 +329,7 @@ export class NotionAgent {
         - oldContent: The content to replace (if applicable)
         - newContent: The new content to replace with (if applicable)
         - parentPage: For creation requests, the parent page where the new page should be created (if specified)
+        - formatType: Format specification for the content (title, quote, bullet, numbered, toggle, callout, code)
         
         Important patterns to handle correctly:
         1. "In Notion, write X in Y" pattern: Y is the pageTitle and X is the content
@@ -349,6 +367,20 @@ export class NotionAgent {
             - X is the name of the new page to create
             - Y is the parent page where the new page should be created
             Example: "Create a new page called Q1 Reports in Finance" → action="create", pageTitle="Q1 Reports", parentPage="Finance"
+            
+        12. Detect format instructions for the content:
+            - "Add a title 'X'" → formatType="title", content="X"
+            - "Write as a quote: 'X'" → formatType="quote", content="X"
+            - "Add a bulleted list with X, Y, Z" → formatType="bullet", content="X, Y, Z"
+            - "Format as code: X" → formatType="code", content="X"
+            - "Create a callout that says X" → formatType="callout", content="X"
+            - "Make a toggle with X" → formatType="toggle", content="X"
+            - "Add a checklist with X, Y, Z" → formatType="checklist", content="X, Y, Z"
+            - "Add a to-do list with X, Y, Z" → formatType="checklist", content="X, Y, Z"
+            
+        13. Handle appending content to existing pages:
+            - "Add X to the bottom of Y page" → action="append", pageTitle="Y", content="X"
+            - "Append X to Y" → action="append", pageTitle="Y", content="X"
         
         Special cases:
         - If the user asks for debug info, set action to "debug"
@@ -412,6 +444,7 @@ export class NotionAgent {
           oldContent: parsedContent.oldContent,
           newContent: parsedContent.newContent,
           parentPage: parsedContent.parentPage,
+          formatType: parsedContent.formatType,
           debug: parsedContent.action === 'debug'
         };
       } catch (parseError) {
@@ -433,6 +466,7 @@ export class NotionAgent {
     oldContent?: string;
     newContent?: string;
     parentPage?: string;
+    formatType?: string;
     debug?: boolean;
   }> {
     console.log(`Fallback to regex parsing for: "${input}"`);
@@ -446,10 +480,76 @@ export class NotionAgent {
       return Promise.resolve({ action: 'debug', debug: true });
     }
     
+    // Check for formatting instructions
+    let formatType: string | undefined;
+    let cleanedInput = input;
+    
+    // Check for formatting instructions
+    if (lowerInput.match(/title\s+['"]/i) || lowerInput.match(/as\s+a\s+title/i)) {
+      formatType = 'title';
+      // Remove format instruction from the input
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+title\s+/i, '');
+    } else if (lowerInput.match(/quote\s+['"]/i) || lowerInput.match(/as\s+a\s+quote/i)) {
+      formatType = 'quote';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+quote\s+/i, '');
+    } else if (lowerInput.match(/bullet(?:ed)?\s+list/i)) {
+      formatType = 'bullet';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+bullet(?:ed)?\s+list\s+/i, '');
+    } else if (lowerInput.match(/number(?:ed)?\s+list/i)) {
+      formatType = 'numbered';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+number(?:ed)?\s+list\s+/i, '');
+    } else if (lowerInput.match(/toggle/i)) {
+      formatType = 'toggle';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+toggle\s+/i, '');
+    } else if (lowerInput.match(/callout/i)) {
+      formatType = 'callout';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+callout\s+/i, '');
+    } else if (lowerInput.match(/code/i) || lowerInput.match(/codeblock/i)) {
+      formatType = 'code';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+code(?:block)?\s+/i, '');
+    } else if (lowerInput.match(/checklist/i) || lowerInput.match(/to-do list/i) || lowerInput.match(/todo list/i)) {
+      formatType = 'checklist';
+      cleanedInput = cleanedInput.replace(/(?:as|make|format|add)\s+(?:a|the)?\s+(?:checklist|to-do list|todo list)\s+/i, '');
+    }
+    
+    // Check for append action
+    if (lowerInput.match(/append\s+/i) || lowerInput.match(/add\s+.*?\s+to\s+the\s+bottom/i)) {
+      // Extract content to append
+      let content = '';
+      let pageTitle = '';
+      
+      // Look for content between quotes
+      const contentMatch = cleanedInput.match(/(?:append|add)\s+["']([^"']+)["']/i);
+      if (contentMatch) {
+        content = contentMatch[1];
+      } else {
+        // Try to extract content without quotes
+        const noQuotesMatch = cleanedInput.match(/(?:append|add)\s+(.*?)(?:\s+to\s+|\s+in\s+|$)/i);
+        if (noQuotesMatch) {
+          content = noQuotesMatch[1].trim();
+        }
+      }
+      
+      // Extract page name
+      const pageMatch = cleanedInput.match(/(?:to|in)\s+(?:the\s+|my\s+)?["']?([^"',\?]+)["']?/i);
+      if (pageMatch) {
+        pageTitle = pageMatch[1].trim().replace(/\s+page$/i, '');
+      } else if (pageCandidates.length > 0) {
+        pageTitle = pageCandidates[0];
+      }
+      
+      return Promise.resolve({
+        action: 'append',
+        content,
+        pageTitle,
+        formatType
+      });
+    }
+    
     // Handle hierarchical page creation patterns
     if (lowerInput.includes('create') && lowerInput.includes('page')) {
       // Pattern: "Create a new page in X saying/called/named Y"
-      const inParentWithNameMatch = input.match(/create\s+(?:a\s+)?(?:new\s+)?page\s+in\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?\s+(?:saying|called|named)\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?/i);
+      const inParentWithNameMatch = cleanedInput.match(/create\s+(?:a\s+)?(?:new\s+)?page\s+in\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?\s+(?:saying|called|named)\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?/i);
       if (inParentWithNameMatch) {
         const parentPage = inParentWithNameMatch[1].trim();
         const pageTitle = inParentWithNameMatch[2].trim();
@@ -461,7 +561,7 @@ export class NotionAgent {
       }
       
       // Pattern: "Create a new page called X in Y"
-      const namedInParentMatch = input.match(/create\s+(?:a\s+)?(?:new\s+)?page\s+(?:called|named)\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?\s+in\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?/i);
+      const namedInParentMatch = cleanedInput.match(/create\s+(?:a\s+)?(?:new\s+)?page\s+(?:called|named)\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?\s+in\s+["']?([^"',.\s]+(?:\s+[^"',.\s]+)*)["']?/i);
       if (namedInParentMatch) {
         const pageTitle = namedInParentMatch[1].trim();
         const parentPage = namedInParentMatch[2].trim();
@@ -478,55 +578,58 @@ export class NotionAgent {
         lowerInput.match(/please\s+(?:write|add|put|jot)/i)) {
       
       // Look for content after "write/add" but before "in"
-      const contentMatch = input.match(/(?:write|add|put|jot)\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      const contentMatch = cleanedInput.match(/(?:write|add|put|jot)\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
       const content = contentMatch ? contentMatch[1].trim() : '';
       
       // Look for page name after "in" or "to"
-      const pageMatch = input.match(/(?:in|to)\s+(?:the\s+|my\s+)?["']?([^"',.]+)(?:["']|\s+page|\s*$)/i);
+      const pageMatch = cleanedInput.match(/(?:in|to)\s+(?:the\s+|my\s+)?["']?([^"',.]+)(?:["']|\s+page|\s*$)/i);
       const pageTitle = pageMatch ? pageMatch[1].trim() : (pageCandidates.length > 0 ? pageCandidates[0] : 'TEST MCP');
       
       return Promise.resolve({
         action: 'write',
         content,
-        pageTitle: pageTitle.replace(/\s+page$/i, '') // Remove "page" from the end
+        pageTitle: pageTitle.replace(/\s+page$/i, ''), // Remove "page" from the end
+        formatType
       });
     }
     
     // Special case for "In Notion, write X in Y" format
     if (lowerInput.startsWith('in notion') && lowerInput.includes('write')) {
-      const contentMatch = input.match(/in\s+notion,?\s+write\s+['"]?([^'"]+)['"]?/i);
+      const contentMatch = cleanedInput.match(/in\s+notion,?\s+write\s+['"]?([^'"]+)['"]?/i);
       if (contentMatch) {
         const content = contentMatch[1].trim();
         
         // Look for page name after "in" following the content
-        const pageMatch = input.match(/in\s+notion,?\s+write\s+['"]?[^'"]+['"]?\s+in\s+["']?([^"',]+)["']?/i);
+        const pageMatch = cleanedInput.match(/in\s+notion,?\s+write\s+['"]?[^'"]+['"]?\s+in\s+["']?([^"',]+)["']?/i);
         const pageTitle = pageMatch && pageMatch[1] ? pageMatch[1].trim() : 'TEST MCP';
         
         return Promise.resolve({
           action: 'write',
           content,
-          pageTitle: pageTitle.replace(/\s+page$/i, '') // Remove "page" from the end
+          pageTitle: pageTitle.replace(/\s+page$/i, ''), // Remove "page" from the end
+          formatType
         });
       }
     }
     
     // Write detection
     if (lowerInput.includes('write')) {
-      const contentMatch = input.match(/write\s+["']([^"']+)["']/i);
+      const contentMatch = cleanedInput.match(/write\s+["']([^"']+)["']/i);
       if (contentMatch) {
         const pageTitle = pageCandidates.length > 0 ? pageCandidates[0] : 'TEST MCP';
         
         return Promise.resolve({
           action: 'write',
           content: contentMatch[1],
-          pageTitle: pageTitle.replace(/\s+page$/i, '') // Remove "page" from the end
+          pageTitle: pageTitle.replace(/\s+page$/i, ''), // Remove "page" from the end
+          formatType
         });
       }
     }
     
     // Create detection
     if (lowerInput.includes('create') || lowerInput.includes('new page')) {
-      const createMatch = input.match(/create\s+(?:a\s+)?(?:new\s+)?(?:page|todo)(?:\s+called\s+|\s+named\s+)["']?([^"',.]+)["']?/i);
+      const createMatch = cleanedInput.match(/create\s+(?:a\s+)?(?:new\s+)?(?:page|todo)(?:\s+called\s+|\s+named\s+)["']?([^"',.]+)["']?/i);
       
       if (createMatch && createMatch[1]) {
         const pageName = createMatch[1].trim();
@@ -540,7 +643,7 @@ export class NotionAgent {
     
     // Edit detection
     if (lowerInput.includes('edit') || lowerInput.includes('change')) {
-      const editMatch = input.match(/(?:edit|change)\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i);
+      const editMatch = cleanedInput.match(/(?:edit|change)\s+["']([^"']+)["']\s+to\s+["']([^"']+)["']/i);
       
       if (editMatch) {
         const pageTitle = pageCandidates.length > 0 ? pageCandidates[0] : 'TEST MCP';
@@ -552,6 +655,77 @@ export class NotionAgent {
           pageTitle: pageTitle.replace(/\s+page$/i, '') // Remove "page" from the end
         });
       }
+    }
+    
+    // Handle conversational requests like "Can you add a toggle list with content regarding my checklist"
+    if (lowerInput.match(/add\s+a\s+toggle\s+list\s+with\s+content\s+regarding/i) || 
+        lowerInput.match(/add\s+a\s+toggle\s+(?:list\s+)?(?:about|with|containing)/i)) {
+      // This is a case where we might need to create a toggle with a checklist inside
+      
+      // Extract the content that should go in the checklist
+      let content = '';
+      
+      // Try different extraction patterns based on common formulations
+      let contentMatch = cleanedInput.match(/regarding\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      if (!contentMatch) {
+        contentMatch = cleanedInput.match(/that\s+is\s+to\s+say\s*:\s*(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      }
+      if (!contentMatch) {
+        contentMatch = cleanedInput.match(/about\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      }
+      if (!contentMatch) {
+        contentMatch = cleanedInput.match(/with\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      }
+      if (!contentMatch) {
+        contentMatch = cleanedInput.match(/containing\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      }
+      
+      if (contentMatch) {
+        content = contentMatch[1].trim();
+      }
+      
+      console.log('Extracted toggle content:', content);
+      
+      // Look for page name after "in" or "to"
+      const pageMatch = cleanedInput.match(/(?:in|to)\s+(?:the\s+|my\s+)?["']?([^"',.]+)(?:["']|\s+page|\s*$)/i);
+      const pageTitle = pageMatch ? pageMatch[1].trim() : (pageCandidates.length > 0 ? pageCandidates[0] : 'TEST MCP');
+      
+      // Check if the content mentions "checklist" - if so, interpret as a checklist inside a toggle
+      const shouldBeChecklist = lowerInput.includes('checklist') || 
+                               lowerInput.includes('todo list') || 
+                               lowerInput.includes('to-do list');
+      
+      return Promise.resolve({
+        action: 'write',
+        content,
+        pageTitle: pageTitle.replace(/\s+page$/i, ''), // Remove "page" from the end
+        formatType: shouldBeChecklist ? 'checklist_in_toggle' : 'toggle'
+      });
+    }
+    
+    // Handle checklist/to-do list requests
+    if (lowerInput.match(/add\s+a\s+checklist\s+with\s+content\s+regarding/i) ||
+        lowerInput.match(/add\s+a\s+to-?do\s+list\s+with\s+content\s+regarding/i)) {
+      
+      // Extract the content for the checklist
+      let content = '';
+      
+      // Try to extract the content
+      const contentMatch = cleanedInput.match(/regarding\s+(.*?)(?:\s+in\s+|\s+to\s+|$)/i);
+      if (contentMatch) {
+        content = contentMatch[1].trim();
+      }
+      
+      // Look for page name after "in" or "to"
+      const pageMatch = cleanedInput.match(/(?:in|to)\s+(?:the\s+|my\s+)?["']?([^"',.]+)(?:["']|\s+page|\s*$)/i);
+      const pageTitle = pageMatch ? pageMatch[1].trim() : (pageCandidates.length > 0 ? pageCandidates[0] : 'TEST MCP');
+      
+      return Promise.resolve({
+        action: 'write',
+        content,
+        pageTitle: pageTitle.replace(/\s+page$/i, ''), // Remove "page" from the end
+        formatType: 'checklist'
+      });
     }
     
     // If we couldn't identify a specific action
@@ -566,6 +740,7 @@ export class NotionAgent {
     oldContent?: string; 
     newContent?: string;
     parentPage?: string;
+    formatType?: string;
     debug?: boolean 
   }> {
     console.log(`Parsing action from: "${input}"`);
@@ -788,14 +963,26 @@ export class NotionAgent {
       if (action === 'write') {
         console.log(`Step 2: Writing content to page ${pageId} (${pageName})`);
         const content = params.content;
-        const result = await this.writeToPage(pageId, content);
+        const formatType = params.formatType;
+        const result = await this.writeToPage(pageId, content, formatType);
         
         return {
           success: true,
           result,
-          message: `Successfully wrote "${content}" to "${pageName}"`
+          message: `Successfully wrote "${content}" to "${pageName}" with format: ${formatType || 'paragraph'}`
         };
         
+      } else if (action === 'append') {
+        console.log(`Step 2: Appending content to page ${pageId} (${pageName})`);
+        const content = params.content;
+        const formatType = params.formatType;
+        const result = await this.appendContentToPage(pageId, content, formatType);
+        
+        return {
+          success: true,
+          result,
+          message: `Successfully appended "${content}" to "${pageName}" with format: ${formatType || 'paragraph'}`
+        };
       } else if (action === 'edit') {
         console.log(`Step 2: Editing content on page ${pageId} (${pageName})`);
         const oldContent = params.oldContent;
@@ -970,9 +1157,18 @@ export class NotionAgent {
             case 'write':
               const writePlan = await this.createActionPlan('write', {
                 pageTitle: action.pageTitle,
-                content: action.content
+                content: action.content,
+                formatType: action.formatType
               });
               return writePlan.message;
+              
+            case 'append':
+              const appendPlan = await this.createActionPlan('append', {
+                pageTitle: action.pageTitle,
+                content: action.content,
+                formatType: action.formatType
+              });
+              return appendPlan.message;
               
             case 'edit':
               const editPlan = await this.createActionPlan('edit', {
@@ -1455,8 +1651,8 @@ export class NotionAgent {
   }
   
   // Write content to a page
-  private async writeToPage(pageId: string, content: string): Promise<any> {
-    console.log(`Writing "${content}" to page ${pageId}`);
+  private async writeToPage(pageId: string, content: string, formatType?: string): Promise<any> {
+    console.log(`Writing "${content}" to page ${pageId}${formatType ? ` with format: ${formatType}` : ''}`);
     
     // Use mock implementation for tests
     if (this.isTestEnvironment) {
@@ -1464,10 +1660,43 @@ export class NotionAgent {
       return {
         id: pageId,
         object: 'block',
-        has_children: false
+        has_children: false,
+        format: formatType || 'paragraph'
       };
     }
     
+    // Use the format agent to convert content to Notion blocks
+    let blocks: any[] = [];
+    
+    // Try to use format agent if available
+    if (this.formatAgent) {
+      try {
+        blocks = await this.formatAgent.formatContent(content, formatType);
+        console.log(`Format agent created ${blocks.length} blocks`);
+      } catch (error) {
+        console.error('Error using format agent, falling back to simple format:', error);
+        // Fallback to basic paragraph if format agent fails
+        blocks = [{
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{ type: 'text', text: { content } }]
+          }
+        }];
+      }
+    } else {
+      // No format agent available, use simple paragraph
+      console.log('No format agent available, using simple paragraph format');
+      blocks = [{
+        object: 'block',
+        type: 'paragraph',
+        paragraph: {
+          rich_text: [{ type: 'text', text: { content } }]
+        }
+      }];
+    }
+    
+    // Write the blocks to the page
     const response = await fetch(`${this.notionApiBaseUrl}/blocks/${pageId}/children`, {
       method: 'PATCH',
       headers: {
@@ -1476,22 +1705,7 @@ export class NotionAgent {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        children: [
-          {
-            object: 'block',
-            type: 'paragraph',
-            paragraph: {
-              rich_text: [
-                {
-                  type: 'text',
-                  text: {
-                    content: content
-                  }
-                }
-              ]
-            }
-          }
-        ]
+        children: blocks
       })
     });
     
@@ -1847,11 +2061,90 @@ export class NotionAgent {
       throw error;
     }
   }
+
+  // Append content to a page
+  private async appendContentToPage(pageId: string, content: string, formatType?: string): Promise<any> {
+    console.log(`Appending "${content}" to page ${pageId}${formatType ? ` with format: ${formatType}` : ''}`);
+    
+    // Use mock implementation for tests
+    if (this.isTestEnvironment) {
+      console.log(`Test environment detected, returning mock append data for content "${content}"`);
+      return {
+        id: pageId,
+        object: 'block',
+        has_children: false,
+        format: formatType || 'paragraph'
+      };
+    }
+    
+    // Use the format agent to convert content to Notion blocks
+    let blocks: any[] = [];
+    
+    // Try to use format agent if available
+    if (this.formatAgent) {
+      try {
+        blocks = await this.formatAgent.formatContent(content, formatType);
+        console.log(`Format agent created ${blocks.length} blocks for append operation`);
+      } catch (error) {
+        console.error('Error using format agent, falling back to simple format:', error);
+        // Fallback to basic paragraph if format agent fails
+        blocks = [{
+          object: 'block',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{ type: 'text', text: { content } }]
+          }
+        }];
+      }
+    } else {
+      // No format agent available, use simple paragraph
+      console.log('No format agent available, using simple paragraph format');
+      blocks = [{
+        object: 'block',
+        type: 'paragraph',
+        paragraph: {
+          rich_text: [{ type: 'text', text: { content } }]
+        }
+      }];
+    }
+    
+    // Append the blocks to the page (using POST instead of PATCH for append)
+    const response = await fetch(`${this.notionApiBaseUrl}/blocks/${pageId}/children`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.notionApiToken}`,
+        'Notion-Version': '2022-06-28',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        children: blocks
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Notion API error:', errorData);
+      throw new Error(`Failed to append to page: ${response.status} ${response.statusText}`);
+    }
+    
+    return await response.json();
+  }
+
+  // Method to ensure format agent is initialized
+  async initializeFormatAgent(): Promise<void> {
+    if (!this.formatAgent && this.openAiApiKey) {
+      this.formatAgent = await createFormatAgent(this.openAiApiKey);
+      console.log('Format agent initialized');
+    }
+  }
 }
 
 // Create a new agent instance
 export async function createAgent(): Promise<NotionAgent> {
-  return new NotionAgent();
+  const agent = new NotionAgent();
+  // Wait for the format agent to initialize
+  await agent.initializeFormatAgent();
+  return agent;
 }
 
 // Process a chat message with the agent
