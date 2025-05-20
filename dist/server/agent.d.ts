@@ -21,6 +21,8 @@ export declare class NotionAgent {
     private commandParser;
     private multiCommandHandler;
     private aiAgentNetwork;
+    private contextAwareHandler;
+    private openai;
     constructor();
     private initAgents;
     get(key: string): any;
@@ -29,37 +31,56 @@ export declare class NotionAgent {
         content: string;
     }>;
     private isDestructiveAction;
-    private parseWithOpenAI;
-    private parseWithRegex;
-    private normalizePageName;
-    private processAction;
-    private writeBlocksToPage;
-    private isRetryableError;
-    private formatErrorMessage;
-    private generateHelpfulResponse;
-    private generateDebugInfo;
-    private deleteBlock;
-    private getPageContent;
-    private getBlockContent;
-    private findPageByName;
-    private extractPageTitle;
-    private calculateSimilarity;
-    private writeToPage;
-    private writeToSection;
-    private getBlockText;
-    private appendContentToPage;
-    private createPage;
-    private createPageInParent;
-    private findBlocksWithContent;
-    private updateBlock;
-    private searchPages;
-    private getAllPages;
-    private findBestPageMatch;
-    private createDatabaseEntry;
-    private createEntryInPageDatabase;
-    private extractDatabaseTitle;
     private parseAction;
+    /**
+     * Detect if the input contains multiple commands
+     */
+    private detectMultiCommand;
+    /**
+     * Detect if a command is targeting a specific section within a page
+     */
+    private detectSectionTargeting;
+    /**
+     * Extract the section target from a command
+     */
+    private extractSectionTarget;
+    /**
+     * Extract the target page name from a command
+     */
+    private extractPageTarget;
+    private processAction;
+    /**
+     * Create and execute an action plan based on the parsed action
+     */
     private createActionPlan;
+    /**
+     * Use LLM to convert format type and content to a proper Notion block
+     */
+    private getNotionBlockFromLLM;
+    /**
+     * Create a basic block as fallback
+     */
+    private createBasicBlock;
+    /**
+     * Handle write actions (create content)
+     */
+    private handleWriteAction;
+    /**
+     * Find a page ID by page name
+     */
+    private findPageId;
+    /**
+     * Extract the title from a page object
+     */
+    private extractPageTitle;
+    /**
+     * Handle update actions (edit existing content)
+     */
+    private handleUpdateAction;
+    /**
+     * Handle delete actions (remove content)
+     */
+    private handleDeleteAction;
 }
 export declare function createAgent(): Promise<NotionAgent>;
 export {};
