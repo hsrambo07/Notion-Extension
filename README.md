@@ -7,6 +7,7 @@ A Chrome extension that lets you control Notion with natural language commands. 
 - 💬 **Natural Language Processing**: Send conversational commands like "Create a page called Project Notes in Work and add checklist to follow up with team"
 - 📝 **Smart Content Placement**: Add content to specific sections within pages ("Add this task under Today's Priorities section")
 - 🔄 **Multi-Part Commands**: Execute complex operations in a single instruction ("Create a page called Weekly Goals and add a bullet list with exercise daily, read more, meditate")
+- 🔀 **Multi-Action Commands**: Execute multiple distinct actions in a single command ("Add a link to LinkedIn in Cool Plugins and add a comment to Personal Thoughts")
 - ✅ **Content Formatting**: Automatically format content as checklists, bullet points, quotes, callouts, or paragraphs
 - 🛡️ **Action Confirmation**: Safeguard against destructive actions with confirmation dialogs
 - 🔄 **Real-time Responses**: Get instant feedback through a local server architecture
@@ -54,6 +55,7 @@ The Notion Agent operates through a multi-component system:
 The core component that:
 - Parses natural language into structured commands
 - Detects multi-part commands (e.g., "create page X and add Y")
+- Processes multi-action commands (e.g., "add link to page X and add comment to page Y")
 - Finds relevant pages and sections in your Notion workspace
 - Executes operations through the Notion API
 - Handles error conditions and retries
@@ -80,6 +82,51 @@ The system can handle compound instructions through:
 1. **Command Segmentation**: Splitting instructions at logical boundaries (e.g., "and add", "and write")
 2. **Intent Preservation**: Maintaining the context across command segments
 3. **Sequential Execution**: Creating a page first, then adding content in the specified format
+
+### Multi-Action Command Processing
+The extension can process multiple distinct actions from a single command:
+
+```
+┌─────────────────┐
+│  User Command   │
+│ (Multiple       │
+│  Actions)       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Command Parsing│
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐      ┌─────────────────┐
+│ Action          │      │   Action Array   │
+│ Identification  │─────▶│  [A1, A2, A3...] │
+└────────┬────────┘      └─────────┬───────┘
+         │                         │
+         ▼                         ▼
+┌─────────────────┐      ┌─────────────────┐
+│  Sequential     │      │Process Individual│
+│  Execution      │─────▶│     Actions     │
+└────────┬────────┘      └─────────┬───────┘
+         │                         │
+         ▼                         ▼
+┌─────────────────┐      ┌─────────────────┐
+│   Response      │      │  Combine Results │
+│   Generation    │◀─────│                  │
+└─────────────────┘      └─────────────────┘
+```
+
+#### Key Components:
+1. **LLM-Powered Parsing**: Uses GPT-4o to identify multiple actions within a single instruction
+2. **Action Extraction**: Separates combined commands into individual, structured actions
+3. **Sequential Processing**: Executes each action in the intended order
+4. **Result Aggregation**: Combines results into a coherent response
+
+#### Common Use Cases:
+- **Cross-page actions**: "Add LinkedIn profile to Resources and add a note about it to Follow-ups"
+- **Combined creation/addition**: "Create a new page Meeting Notes and add agenda items to it"
+- **Multi-database operations**: "Add a new tool to Cool Plugins and add the same link to Resources Gallery"
 
 ## 🛠️ Setup
 
@@ -154,6 +201,7 @@ This will start:
 - **Multi-part commands**: "Create a page called Q3 Goals in Work and add checklist to finish project, hire new developer, update documentation"
 - **Section-specific placement**: "Add 'Call accountant' under Important section in Tasks page"
 - **Content formatting**: "Add as toggle 'Project Details: Launching in September with initial beta access for partners'"
+- **Multi-action commands**: "Add LinkedIn profile https://linkedin.com/in/user to Cool Plugins and add 'Check this profile later' to Personal Thoughts"
 
 ## 🧪 Testing
 
@@ -171,6 +219,9 @@ NODE_ENV=production node test-multipart-commands.js
 
 # Test section placement functionality
 NODE_ENV=production node test-section-placement.js
+
+# Test multi-action command handling
+NODE_ENV=production node test-multi-action-commands.js
 ```
 
 ## 🔍 Troubleshooting
@@ -190,6 +241,10 @@ NODE_ENV=production node test-section-placement.js
 ### Multi-part Commands
 - Make sure commands have a clear separation ("and add", "and write")
 - For checklists, include "to" before the action (e.g., "add checklist to read books")
+
+### Multi-action Commands
+- Ensure each action has clear and complete information (page names, content)
+- Use "and" to separate distinct actions
 
 ## 🔄 Workflow Internals
 
@@ -219,6 +274,11 @@ NODE_ENV=production node test-section-placement.js
 └───────────────────┘             │
         │                         ▼
         │                ┌─────────────────┐
+        │                │ Process Multiple │
+        │                │ Actions          │
+        │                └────────┬────────┘
+        │                         │
+        │                         ▼
         └───────────────►│ Add Content     │
                          └───────┬─────────┘
                                  │
@@ -248,10 +308,7 @@ NODE_ENV=production node test-section-placement.js
 | Create | "Create a page called Project Notes" | Creates a new page |
 | Write | "Write 'Meeting notes from today' in Work Journal" | Adds content to an existing page |
 | Edit | "Edit 'old text' to 'new text' in Notes" | Modifies existing content |
-| Format | "Add a checklist with item 1, item 2, item 3" | Creates formatted content |
-| Section | "Add 'Follow up' under Today section" | Places content in a specific section |
-| Multi-part | "Create Weekly Goals and add bullet list with exercise, read, meditate" | Combines multiple operations |
-| Debug | "Show debug info" | Displays system information |
+| Multiple Actions | "Add a link to LinkedIn in Cool Plugins and add a comment to Project Notes" | Performs multiple separate actions |
 
 ## 🔗 License
 

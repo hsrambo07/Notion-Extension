@@ -10,6 +10,38 @@ import { serve } from '@hono/node-server';
 // Load environment variables
 config();
 
+// Validate OpenAI API key
+function validateOpenAIKey() {
+  const apiKey = process.env.OPENAI_API_KEY;
+  
+  if (!apiKey) {
+    console.error('❌ ERROR: No OpenAI API key found in environment variables.');
+    console.error('Please set OPENAI_API_KEY in your .env file.');
+    return false;
+  }
+  
+  if (!apiKey.startsWith('sk-')) {
+    console.error('❌ ERROR: Invalid OpenAI API key format. Key should start with "sk-".');
+    console.error(`Current key starts with "${apiKey.substring(0, 5)}..."`);
+    return false;
+  }
+  
+  if (apiKey.length < 30) {
+    console.error('❌ ERROR: OpenAI API key appears to be truncated or malformed.');
+    console.error(`Key length: ${apiKey.length} characters (expected at least 30)`);
+    return false;
+  }
+  
+  // Test for common errors in the key
+  if (apiKey.includes(' ') || apiKey.includes('\n') || apiKey.includes('\r')) {
+    console.error('❌ ERROR: OpenAI API key contains whitespace characters.');
+    return false;
+  }
+  
+  console.log('✅ OpenAI API key format appears valid.');
+  return true;
+}
+
 // Debug environment variables
 console.log('Server environment variables:', {
   nodeEnv: process.env.NODE_ENV,
@@ -18,6 +50,9 @@ console.log('Server environment variables:', {
   port: process.env.PORT || '9000',
   mcpNotionPort: process.env.MCP_NOTION_PORT || '3333'
 });
+
+// Run API key validation
+validateOpenAIKey();
 
 // Create a shared agent instance
 let agentInstance: NotionAgent | null = null;
