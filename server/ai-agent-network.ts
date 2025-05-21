@@ -45,9 +45,20 @@ export class AIAgentNetwork {
     this.specializedAgents.set('formatDetector', new SpecializedAgent(
       this.openAiApiKey,
       'formatDetector',
-      `You are an expert format detector. Your job is to analyze a command and determine how content should be formatted.
-       Common formats include: paragraph, bullet, toggle, quote, code, callout, checklist, to-do, heading, subheading.
-       Return the format type and nothing else.`
+      `You are an expert format detector for Notion content formatting. Your job is to analyze a command and determine how content should be formatted.
+       Common formats include: paragraph, bullet, toggle, quote, code, callout, to_do, heading, subheading.
+       
+       CRITICAL RULES:
+       1. For any todo-like patterns, you MUST return EXACTLY "to_do" (not "todo" or "checklist" or "task")
+       2. This includes:
+          - "as todo" -> "to_do"
+          - "as checklist" -> "to_do"
+          - "as task" -> "to_do"
+          - "in todo" -> "to_do"
+          - "in checklist" -> "to_do"
+       3. The string "to_do" must be exact - no variations allowed
+       
+       Return ONLY the format type string and nothing else.`
     ));
     
     // Multi-command detector - specializes in detecting and parsing multi-part commands
@@ -109,14 +120,41 @@ export class AIAgentNetwork {
       return this.getTestModeResponse(input);
     }
     
-    try {
-      // 1. First check if this is a multi-command using the multi-command detector
-      const isMultiCommand = await this.specializedAgents.get('multiCommandDetector')?.detect(input) || false;
+    // Log input for debugging
+    console.log(`DEBUG: Processing input: "${input}"`);
+    
+    // FIRST: Check for todo patterns before anything else
+    const todoPattern = /add\s+(.*?)\s+(?:(?:in|as)\s+(?:a\s+)?(?:to-?do|todo|to\s+do|checklist|task)(?:\s+item)?|\s+in\s+todo)(?:\s+(?:in|to)\s+(?:my\s+)?([^\s]+(?:\s+[^\s]+)*)\s*page)?/i;
+    const todoMatch = input.match(todoPattern);
+    
+    if (todoMatch) {
+      console.log('DEBUG: Direct todo pattern match:', todoMatch);
+      const content = todoMatch[1]?.trim();
+      const targetPage = todoMatch[2]?.trim() || 'TEST MCP';
       
-      if (isMultiCommand) {
-        console.log('Multi-command detected, splitting into separate commands');
+      if (content) {
+        console.log('DEBUG: Creating todo command with content:', content);
+        console.log('DEBUG: Target page:', targetPage);
+        return [{
+          action: 'write',
+          primaryTarget: targetPage,
+          content: content,
+          formatType: 'to_do'
+        }];
+      }
+    }
+    
+    try {
+      // Handle multi-command case
+      if (input.includes(' and ')) {
         const commands = await this.splitMultiCommands(input);
-        return commands;
+        return commands.map(cmd => {
+          if (cmd.formatType && /(todo|to-?do|task|checklist)/i.test(cmd.formatType)) {
+            console.log(`DEBUG: Normalizing format type from "${cmd.formatType}" to "to_do"`);
+            cmd.formatType = 'to_do';
+          }
+          return cmd;
+        });
       }
       
       // 2. Check if this is a URL with comment
@@ -179,10 +217,15 @@ export class AIAgentNetwork {
         }
       }
       
+      // Normalize format type
+      if (baseCommand && baseCommand.formatType && /(todo|to-?do|task|checklist)/i.test(baseCommand.formatType)) {
+        console.log(`DEBUG: Normalizing format type from "${baseCommand.formatType}" to "to_do"`);
+        baseCommand.formatType = 'to_do';
+      }
+
       return [baseCommand];
     } catch (error) {
-      console.error('Error in AI Agent Network processCommand, falling back to test mode:', error);
-      console.log('Using test mode response as fallback');
+      console.error('Error in AI Agent Network processCommand:', error);
       return this.getTestModeResponse(input);
     }
   }
@@ -256,6 +299,38 @@ export class AIAgentNetwork {
    */
   private getTestModeResponse(input: string): any[] {
     console.log('Using AIAgentNetwork test mode response');
+    
+    // FIRST: Check for todo patterns before anything else
+    const todoPattern = /add\s+(.*?)\s+as\s+(?:a\s+)?(?:to-?do|todo|to\s+do|checklist|task)(?:\s+(?:item\s+)?(?:in|to)\s+(?:my\s+)?([^\s]+(?:\s+[^\s]+)*)\s*page)?/i;
+    const todoMatch = input.match(todoPattern);
+    
+    if (todoMatch || input.includes('as to do')) {
+      console.log('DEBUG: Direct todo pattern match:', todoMatch);
+      let content, targetPage;
+      
+      if (todoMatch) {
+        content = todoMatch[1]?.trim();
+        targetPage = todoMatch[2]?.trim() || 'TEST MCP';
+      } else {
+        // Handle "as to do" case separately
+        const altMatch = input.match(/add\s+(.*?)\s+as\s+to\s+do(?:\s+(?:in|to)\s+(?:my\s+)?([^\s]+(?:\s+[^\s]+)*)\s*page)?/i);
+        if (altMatch) {
+          content = altMatch[1]?.trim();
+          targetPage = altMatch[2]?.trim() || 'TEST MCP';
+        }
+      }
+      
+      if (content) {
+        console.log('DEBUG: Creating todo command with content:', content);
+        console.log('DEBUG: Target page:', targetPage);
+        return [{
+          action: 'write',
+          primaryTarget: targetPage,
+          content: content,
+          formatType: 'to_do'
+        }];
+      }
+    }
     
     // Check for multiple checklist items
     const checklistWithMultiplePattern = /add\s+(.*?)\s+in\s+checklist\s+and\s+(.*?)\s+in\s+checklist(?:\s+too)?(?:\s+in\s+([^,.]+))?/i;

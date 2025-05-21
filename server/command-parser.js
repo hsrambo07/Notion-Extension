@@ -30,6 +30,69 @@ export class CommandParser {
         if (this.isTestEnvironment) {
             return this.getTestModeResponse(input);
         }
+        // Early detection of page creation commands
+        if (/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\b/i.test(input)) {
+            console.log('Direct detection of page creation command in command-parser');
+            
+            // Check if this is a multi-part command with "and"
+            const multiCommandMatch = input.match(/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\s+(?:called\s+|named\s+)?["']?([^"'\s]+)["']?\s+(?:and|&)\s+/i);
+            
+            if (multiCommandMatch) {
+                console.log('Command parser detected multi-part command with page creation');
+                const pageName = multiCommandMatch[1].trim();
+                
+                // Extract the parent page at the end
+                const parentMatch = input.match(/\bin\s+(?:the\s+)?["']?([^"',.]+?)["']?(?:\s+page)?\s*$/i);
+                const parentPage = parentMatch ? parentMatch[1].trim() : "TEST MCP";
+                
+                // Create commands array for multi-part commands
+                const commands = [];
+                
+                // Add the page creation command
+                commands.push({
+                    action: 'create',
+                    primaryTarget: parentPage,
+                    content: pageName,
+                    formatType: 'page',
+                    sectionTarget: null
+                });
+                
+                // Extract the second part after "and"
+                const secondPartMatch = input.match(/\band\s+(.*?)(?:\s+in\s+|$)/i);
+                if (secondPartMatch) {
+                    const secondAction = secondPartMatch[1].trim();
+                    
+                    // Add a write command for the second part
+                    commands.push({
+                        action: 'write',
+                        primaryTarget: pageName, // Target the newly created page
+                        content: secondAction.replace(/^(?:add|write)\s+(?:text\s+)?/i, ''), // Remove action words
+                        formatType: 'paragraph',
+                        isMultiAction: true
+                    });
+                }
+                
+                // Return the array of commands
+                return commands;
+            }
+            
+            // Simple page creation (no multi-part)
+            // Extract the page name
+            const pageNameMatch = input.match(/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\s+(?:called\s+|named\s+)?["']?([^"',.]+?)["']?(?:\s+in\b|\s+to\b|$)/i);
+            const pageName = pageNameMatch ? pageNameMatch[1].trim() : "New Page";
+            
+            // Extract the parent page
+            const parentMatch = input.match(/\bin\s+(?:the\s+)?["']?([^"',.]+?)["']?(?:\s+page)?\b/i);
+            const parentPage = parentMatch ? parentMatch[1].trim() : "TEST MCP";
+            
+            return {
+                action: 'create',
+                primaryTarget: parentPage,
+                content: pageName,
+                formatType: 'page',
+                sectionTarget: null
+            };
+        }
         // Check for explicit code block pattern
         if (input.includes('```') && this.isCodeBlockRequest(input)) {
             return this.handleCodeBlockCommand(input);

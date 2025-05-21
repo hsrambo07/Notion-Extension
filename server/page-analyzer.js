@@ -153,6 +153,30 @@ class PageAnalyzer {
     const normalizedQuery = sectionName.toLowerCase().trim();
     console.log(`Normalized section query: "${normalizedQuery}"`);
     
+    // NEW: Handle common typos and partial matches first
+    if (normalizedQuery.includes('interestin') || normalizedQuery.includes('prompt')) {
+      console.log('Detected potential typo or partial match for "Interesting Prompts"');
+      const promptSection = sections.find(section => 
+        section.title.toLowerCase().includes('prompt') ||
+        section.title.toLowerCase().includes('interesting')
+      );
+      
+      if (promptSection) {
+        console.log(`Found section matching "Interesting Prompts": "${promptSection.title}"`);
+        return promptSection;
+      }
+    }
+    
+    // ENHANCED MATCHING: First try exact match (case insensitive)
+    const exactMatch = sections.find(section => 
+      section.title.toLowerCase() === normalizedQuery
+    );
+    
+    if (exactMatch) {
+      console.log(`Found exact match section: "${exactMatch.title}"`);
+      return exactMatch;
+    }
+    
     // Special handling for "my day" - most common case
     if (normalizedQuery === 'my day' || 
         normalizedQuery === 'day' || 
@@ -183,72 +207,81 @@ class PageAnalyzer {
       }
     }
     
+    // NEW: Advanced fuzzy matching using Levenshtein distance for typo tolerance
+    const findBestFuzzyMatch = (query, candidates, threshold = 0.7) => {
+      // Simple character-based similarity score (higher is better)
+      const similarityScore = (str1, str2) => {
+        const longer = str1.length > str2.length ? str1 : str2;
+        const shorter = str1.length > str2.length ? str2 : str1;
+        
+        if (longer.length === 0) return 1.0;
+        
+        // Count matching characters
+        let matches = 0;
+        for (let i = 0; i < shorter.length; i++) {
+          if (longer.includes(shorter[i])) {
+            matches++;
+          }
+        }
+        
+        return matches / longer.length;
+      };
+      
+      let bestMatch = null;
+      let highestScore = 0;
+      
+      candidates.forEach(candidate => {
+        const score = similarityScore(query, candidate.title.toLowerCase());
+        console.log(`Fuzzy match score for "${candidate.title}": ${score.toFixed(2)}`);
+        
+        if (score > threshold && score > highestScore) {
+          highestScore = score;
+          bestMatch = candidate;
+        }
+      });
+      
+      return bestMatch;
+    };
+    
+    // Try fuzzy matching with common section name corrections
+    const correctedQueries = [
+      normalizedQuery,
+      // Common corrections
+      normalizedQuery.replace('interestin', 'interesting'),
+      normalizedQuery.replace('prompt', 'prompts'),
+      // If there's "prompt" anywhere, try "interesting prompts"
+      normalizedQuery.includes('prompt') ? 'interesting prompts' : null
+    ].filter(Boolean); // Remove null values
+    
+    for (const query of correctedQueries) {
+      const fuzzyMatch = findBestFuzzyMatch(query, sections);
+      if (fuzzyMatch) {
+        console.log(`Found fuzzy match with corrected query "${query}": "${fuzzyMatch.title}"`);
+        return fuzzyMatch;
+      }
+    }
+    
+    // ENHANCED: Improved fuzzy matching for all section names
+    // Check for partial matches, allowing for variations in wording
+    const partialMatch = sections.find(section => {
+      const sectionTitle = section.title.toLowerCase();
+      // Check if the section name contains the query or the query contains the section name
+      return sectionTitle.includes(normalizedQuery) || normalizedQuery.includes(sectionTitle);
+    });
+    
+    if (partialMatch) {
+      console.log(`Found partial match section: "${partialMatch.title}"`);
+      return partialMatch;
+    }
+    
     // Common section name synonyms - extended for better matching
     const sectionSynonyms = {
       'my day': ['today', 'daily', 'day', 'my day', 'today\'s tasks', 'today\'s', 'for today'],
       'tasks': ['to-do', 'todo', 'to do', 'checklist', 'task list', 'task', 'tasks', 'to dos', 'to-dos', 'todos'],
       'tech': ['technology', 'technical', 'programming', 'development', 'dev', 'tech tasks', 'code', 'tech task'],
-      'design': ['ui', 'ux', 'interface', 'layout', 'design tasks', 'mockup', 'visual', 'design task']
+      'design': ['ui', 'ux', 'interface', 'layout', 'design tasks', 'mockup', 'visual', 'design task'],
+      'interesting prompts': ['interestin prompt', 'prompt', 'prompts', 'interesting prompt', 'interestn prompts']
     };
-    
-    // First try exact match (case insensitive)
-    const exactMatch = sections.find(section => 
-      section.title.toLowerCase() === normalizedQuery
-    );
-    
-    if (exactMatch) {
-      console.log(`Found exact match: "${exactMatch.title}"`);
-      return exactMatch;
-    }
-    
-    // Special case for "My Day" since it's a common section
-    if (normalizedQuery === 'my day' || normalizedQuery === 'day') {
-      const daySection = sections.find(section => 
-        section.title.toLowerCase().includes('day') || 
-        section.title.toLowerCase().includes('daily') ||
-        section.title.toLowerCase().includes('today')
-      );
-      
-      if (daySection) {
-        console.log(`Found "day" section using special case: "${daySection.title}"`);
-        return daySection;
-      }
-    }
-    
-    // Try exact match with "Tasks" for the main tasks page - common pattern
-    if (normalizedQuery.includes('task') && !normalizedQuery.includes('tech') && !normalizedQuery.includes('design')) {
-      const mainTasksSection = sections.find(section => 
-        section.title.toLowerCase() === 'tasks'
-      );
-      
-      if (mainTasksSection) {
-        console.log(`Found main Tasks section: "${mainTasksSection.title}"`);
-        return mainTasksSection;
-      }
-    }
-    
-    // Handle tech and design task sections
-    if (normalizedQuery.includes('tech')) {
-      const techSection = sections.find(section => 
-        section.title.toLowerCase().includes('tech')
-      );
-      
-      if (techSection) {
-        console.log(`Found Tech section: "${techSection.title}"`);
-        return techSection;
-      }
-    }
-    
-    if (normalizedQuery.includes('design')) {
-      const designSection = sections.find(section => 
-        section.title.toLowerCase().includes('design')
-      );
-      
-      if (designSection) {
-        console.log(`Found Design section: "${designSection.title}"`);
-        return designSection;
-      }
-    }
     
     // Try synonym matching with improved logging
     for (const [sectionKey, synonyms] of Object.entries(sectionSynonyms)) {

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notion Clipboard Upload Demo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    h1, h2 {
+      margin-top: 1.5em;
+    }
+    .clipboard-area {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 150px;
+      background-color: #f9f9f9;
+      margin-bottom: 20px;
+    }
+    .clipboard-area:focus {
+      outline: none;
+      border-color: #007bff;
+      background-color: #f0f8ff;
+    }
+    .status {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .success {
+      background-color: #dff0d8;
+      color: #3c763d;
+    }
+    .error {
+      background-color: #f2dede;
+      color: #a94442;
+    }
+    .code {
+      background-color: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-family: monospace;
+    }
+    button {
+      padding: 8px 16px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #0069d9;
+    }
+    pre {
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Notion Clipboard Upload Demo</h1>
+  <p>This demo shows how to use the Notion Upload Handler to handle clipboard images and text. Copy some text or an image and then paste it into the boxes below.</p>
+  
+  <h2>Basic Clipboard Area</h2>
+  <div 
+    class="clipboard-area" 
+    contenteditable="true" 
+    data-page-title="TEST MCP"
+    id="basic-clipboard">
+    Click here and paste (Ctrl+V or ⌘+V) text or images from your clipboard...
+  </div>
+  <div id="basic-status" class="status"></div>
+  
+  <h2>Section-targeted Clipboard Area</h2>
+  <div 
+    class="clipboard-area" 
+    contenteditable="true" 
+    data-page-title="TEST MCP" 
+    data-section-title="Test Section"
+    id="section-clipboard">
+    Paste here to add content to the "Test Section" of the page...
+  </div>
+  <div id="section-status" class="status"></div>
+  
+  <h2>File Upload</h2>
+  <p>You can also upload files directly:</p>
+  <input type="file" id="file-input" multiple>
+  <button onclick="uploadFiles()">Upload Selected Files</button>
+  <div id="file-status" class="status"></div>
+  
+  <h2>Results:</h2>
+  <pre id="results" class="code">No uploads yet</pre>
+  
+  <script src="../client/upload-handler.js"></script>
+  <script>
+    // Initialize the uploader
+    const uploader = new NotionUploadHandler({
+      apiUrl: 'http://localhost:9000',
+      defaultPageTitle: 'TEST MCP',
+      debug: true
+    });
+    
+    // Initialize clipboard handlers
+    initClipboardHandlers('.clipboard-area', {
+      defaultPageTitle: 'TEST MCP',
+      onSuccess: (result, element) => {
+        // Show success message
+        const id = element.id.replace('-clipboard', '-status');
+        const statusEl = document.getElementById(id);
+        statusEl.className = 'status success';
+        statusEl.textContent = 'Upload successful!';
+        
+        // Update results area
+        document.getElementById('results').textContent = JSON.stringify(result, null, 2);
+        
+        // Clear the clipboard area
+        setTimeout(() => {
+          element.textContent = 'Paste again...';
+        }, 2000);
+      },
+      onError: (error, element) => {
+        // Show error message
+        const id = element.id.replace('-clipboard', '-status');
+        const statusEl = document.getElementById(id);
+        statusEl.className = 'status error';
+        statusEl.textContent = `Error: ${error.message}`;
+      }
+    });
+    
+    // Handle file uploads
+    function uploadFiles() {
+      const fileInput = document.getElementById('file-input');
+      const files = fileInput.files;
+      
+      if (files.length === 0) {
+        const statusEl = document.getElementById('file-status');
+        statusEl.className = 'status error';
+        statusEl.textContent = 'Please select at least one file';
+        return;
+      }
+      
+      uploader.uploadMultipleFiles(files, {
+        pageTitle: 'TEST MCP'
+      })
+      .then(result => {
+        const statusEl = document.getElementById('file-status');
+        statusEl.className = 'status success';
+        statusEl.textContent = `Successfully uploaded ${files.length} file(s)`;
+        
+        // Update results area
+        document.getElementById('results').textContent = JSON.stringify(result, null, 2);
+      })
+      .catch(error => {
+        const statusEl = document.getElementById('file-status');
+        statusEl.className = 'status error';
+        statusEl.textContent = `Error: ${error.message}`;
+      });
+    }
+  </script>
+</body>
+</html> 

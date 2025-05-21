@@ -27,7 +27,10 @@ export declare class NotionAgent {
     private initAgents;
     get(key: string): any;
     set(key: string, value: any): void;
-    chat(input: string): Promise<{
+    /**
+     * Process a chat request
+     */
+    chat(input: string, options?: any): Promise<{
         content: string;
     }>;
     private isDestructiveAction;
@@ -37,7 +40,7 @@ export declare class NotionAgent {
      */
     private detectMultiCommand;
     /**
-     * Detect if a command is targeting a specific section within a page
+     * Detect if the input has section targeting
      */
     private detectSectionTargeting;
     /**
@@ -54,6 +57,10 @@ export declare class NotionAgent {
      */
     private createActionPlan;
     /**
+     * Handle page creation action
+     */
+    private handleCreatePageAction;
+    /**
      * Use LLM to convert format type and content to a proper Notion block
      */
     private getNotionBlockFromLLM;
@@ -62,7 +69,19 @@ export declare class NotionAgent {
      */
     private createBasicBlock;
     /**
-     * Handle write actions (create content)
+     * Handle file upload to Notion with improved error handling and retries
+     */
+    private uploadFileToNotion;
+    /**
+     * Create image block from uploaded file with improved error handling
+     */
+    private createImageBlockFromUpload;
+    /**
+     * Create file block from uploaded file
+     */
+    private createFileBlockFromUpload;
+    /**
+     * Update handleWriteAction to handle mixed content types
      */
     private handleWriteAction;
     /**
@@ -81,6 +100,10 @@ export declare class NotionAgent {
      * Handle delete actions (remove content)
      */
     private handleDeleteAction;
+    /**
+     * Find a subpage by parent ID and subpage name
+     */
+    private findSubpageId;
 }
 export declare function createAgent(): Promise<NotionAgent>;
 export {};

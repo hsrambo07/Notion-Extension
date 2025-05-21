@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fetch, { Response } from 'node-fetch';
 import { FormatAgent, createFormatAgent } from './format-agent.js';
+import { validateNotionBlock } from './block-validator.js';
 // Import the command parser and multi-command handler
 import { createCommandParser } from './command-parser.js';
 import { createMultiCommandHandler } from './multi-command-handler.js';
@@ -14,6 +15,8 @@ import { createAIAgentNetwork } from './ai-agent-network.js';
 import { LLMCommandParser } from './llm-command-parser.js';
 // Import the Context-Aware Handler for intelligent section targeting
 import ContextAwareHandler from './context-aware-handler.js';
+// Import the enhanced parser integration tools
+import { patchAgentWithEnhancedParser } from './integrator.js';
 // Remove static OpenAI import
 // import OpenAI from 'openai';
 
@@ -103,6 +106,10 @@ export class NotionAgent {
         this.contextAwareHandler = new ContextAwareHandler(this.notionApiToken, this.openAiApiKey);
         console.log('Context-Aware Handler initialized');
         
+        // Patch the agent with enhanced parser
+        await patchAgentWithEnhancedParser(this);
+        console.log('Enhanced parser integration complete');
+        
         // Dynamically import and initialize OpenAI
         try {
           const { default: OpenAI } = await import('openai');
@@ -138,135 +145,158 @@ export class NotionAgent {
     this.state.set(key, value);
   }
   
-  // Process a chat message
-  async chat(input: string): Promise<{ content: string }> {
-    // Special handling for simple yes/no confirmation
-    if (input.toLowerCase() === 'yes' && this.state.get('requireConfirm')) {
-      console.log('Confirmation received, processing pending action');
-      // Set confirmation and get the pending action
-      this.state.set('confirm', true);
-      const pendingAction = this.state.get('pendingAction');
-      
-      // Reset confirmation state
-      this.state.set('requireConfirm', false);
-      
-      // Process the pending action with confirmation
-      console.log('Processing pending action:', pendingAction);
-      const result = await this.processAction(pendingAction);
-      
-      // Check if there are remaining commands and process them
-      const remaining = this.state.get('remainingCommands');
-      if (remaining && remaining.length > 0) {
-        console.log(`Processing ${remaining.length} remaining commands sequentially`);
-        let combinedResult = result;
+  /**
+   * Process a chat request
+   */
+  async chat(input: string, options: any = {}): Promise<{ content: string }> {
+    try {
+      // Handle file upload if present
+      if (options.file) {
+        const result = await this.handleWriteAction({
+          pageTitle: options.pageTitle || 'TEST MCP',
+          file: options.file
+        });
+        return { content: result.message };
+      }
+
+      // If no input and no file, return error
+      if (!input && !options.file) {
+        return { content: 'No content provided' };
+      }
+
+      // Special handling for simple yes/no confirmation
+      if (input.toLowerCase() === 'yes' && this.state.get('requireConfirm')) {
+        console.log('Confirmation received, processing pending action');
+        // Set confirmation and get the pending action
+        this.state.set('confirm', true);
+        const pendingAction = this.state.get('pendingAction');
         
-        // Process each remaining command and combine the results
-        for (const command of [...remaining]) {
-          // Remove from remaining before processing (to avoid infinite loops)
-          this.state.set('remainingCommands', remaining.slice(1));
+        // Reset confirmation state
+        this.state.set('requireConfirm', false);
+        
+        // Process the pending action with confirmation
+        console.log('Processing pending action:', pendingAction);
+        const result = await this.processAction(pendingAction);
+        
+        // Check if there are remaining commands and process them
+        const remaining = this.state.get('remainingCommands');
+        if (remaining && remaining.length > 0) {
+          console.log(`Processing ${remaining.length} remaining commands sequentially`);
+          let combinedResult = result;
           
-          // Convert to format expected by createActionPlan
-          const nextActionParams = {
-            action: command.action || 'unknown',
-            pageTitle: command.primaryTarget,
-            content: command.content,
-            oldContent: command.oldContent,
-            newContent: command.newContent,
-            parentPage: command.secondaryTarget,
-            formatType: command.formatType,
-            sectionTitle: command.sectionTarget,
-            debug: command.debug || false,
-            isUrl: command.isUrl || false,
-            commentText: command.commentText
-          };
-          
-          // Process without going through chat again (since already confirmed)
-          const nextResult = await this.createActionPlan(nextActionParams.action, nextActionParams);
-          
-          // Combine results
-          if (nextResult && nextResult.message) {
-            combinedResult += ` ${nextResult.message}`;
+          // Process each remaining command and combine the results
+          for (const command of [...remaining]) {
+            // Remove from remaining before processing (to avoid infinite loops)
+            this.state.set('remainingCommands', remaining.slice(1));
+            
+            // Convert to format expected by createActionPlan
+            const nextActionParams = {
+              action: command.action || 'unknown',
+              pageTitle: command.primaryTarget,
+              content: command.content,
+              oldContent: command.oldContent,
+              newContent: command.newContent,
+              parentPage: command.secondaryTarget,
+              formatType: command.formatType,
+              sectionTitle: command.sectionTarget,
+              debug: command.debug || false,
+              isUrl: command.isUrl || false,
+              commentText: command.commentText
+            };
+            
+            // Process without going through chat again (since already confirmed)
+            const nextResult = await this.createActionPlan(nextActionParams.action, nextActionParams);
+            
+            // Combine results
+            if (nextResult && nextResult.message) {
+              combinedResult += ` ${nextResult.message}`;
+            }
           }
+          
+          return { content: combinedResult };
         }
         
-        return { content: combinedResult };
+        return { content: result };
+      }
+      
+      if (input.toLowerCase() === 'no' && this.state.get('requireConfirm')) {
+        // Reset confirmation state
+        this.state.set('requireConfirm', false);
+        this.state.set('pendingAction', null);
+        
+        return { content: "Action cancelled." };
+      }
+      
+      // Standard flow for processing instructions
+      const isDestructive = this.isDestructiveAction(input);
+      
+      // If destructive and no confirmation yet, request confirmation
+      if (isDestructive && !this.state.get('confirm')) {
+        this.state.set('requireConfirm', true);
+        this.state.set('pendingAction', input);
+        return { content: "CONFIRM? This action will modify your Notion workspace. Reply 'yes' to confirm or 'no' to cancel." };
+      }
+      
+      // Reset confirmation state
+      this.state.set('confirm', false);
+      this.state.set('requireConfirm', false);
+      
+      // Process the action
+      const result = await this.processAction(input);
+      
+      // Check if there are remaining commands that were found during parsing
+      const remaining = this.state.get('remainingCommands');
+      if (remaining && remaining.length > 0) {
+        console.log(`Found ${remaining.length} additional commands to process sequentially`);
+        
+        // For non-destructive commands, process them all at once
+        if (!isDestructive) {
+          let combinedResult = result;
+          
+          // Process each remaining command and combine the results
+          for (const command of [...remaining]) {
+            // Remove from remaining before processing (to avoid infinite loops)
+            this.state.set('remainingCommands', remaining.slice(1));
+            
+            // Convert to format expected by createActionPlan
+            const nextActionParams = {
+              action: command.action || 'unknown',
+              pageTitle: command.primaryTarget, 
+              content: command.content,
+              oldContent: command.oldContent,
+              newContent: command.newContent,
+              parentPage: command.secondaryTarget,
+              formatType: command.formatType,
+              sectionTitle: command.sectionTarget,
+              debug: command.debug || false,
+              isUrl: command.isUrl || false,
+              commentText: command.commentText
+            };
+            
+            // Process without going through chat again
+            const nextResult = await this.createActionPlan(nextActionParams.action, nextActionParams);
+            
+            // Combine results
+            if (nextResult && nextResult.message) {
+              combinedResult += ` ${nextResult.message}`;
+            }
+          }
+          
+          return { content: combinedResult };
+        } else {
+          // For destructive commands, we'll process just the first one now
+          // and keep the rest for later confirmations
+          return { content: result };
+        }
       }
       
       return { content: result };
+    } catch (error) {
+      console.error('Error in chat:', error);
+      return {
+        content: `Error processing your request: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
     }
-    
-    if (input.toLowerCase() === 'no' && this.state.get('requireConfirm')) {
-      // Reset confirmation state
-      this.state.set('requireConfirm', false);
-      this.state.set('pendingAction', null);
-      
-      return { content: "Action cancelled." };
-    }
-    
-    // Standard flow for processing instructions
-    const isDestructive = this.isDestructiveAction(input);
-    
-    // If destructive and no confirmation yet, request confirmation
-    if (isDestructive && !this.state.get('confirm')) {
-      this.state.set('requireConfirm', true);
-      this.state.set('pendingAction', input);
-      return { content: "CONFIRM? This action will modify your Notion workspace. Reply 'yes' to confirm or 'no' to cancel." };
-    }
-    
-    // Reset confirmation state
-    this.state.set('confirm', false);
-    this.state.set('requireConfirm', false);
-    
-    // Process the action
-    const result = await this.processAction(input);
-    
-    // Check if there are remaining commands that were found during parsing
-    const remaining = this.state.get('remainingCommands');
-    if (remaining && remaining.length > 0) {
-      console.log(`Found ${remaining.length} additional commands to process sequentially`);
-      
-      // For non-destructive commands, process them all at once
-      if (!isDestructive) {
-        let combinedResult = result;
-        
-        // Process each remaining command and combine the results
-        for (const command of [...remaining]) {
-          // Remove from remaining before processing (to avoid infinite loops)
-          this.state.set('remainingCommands', remaining.slice(1));
-          
-          // Convert to format expected by createActionPlan
-          const nextActionParams = {
-            action: command.action || 'unknown',
-            pageTitle: command.primaryTarget, 
-            content: command.content,
-            oldContent: command.oldContent,
-            newContent: command.newContent,
-            parentPage: command.secondaryTarget,
-            formatType: command.formatType,
-            sectionTitle: command.sectionTarget,
-            debug: command.debug || false,
-            isUrl: command.isUrl || false,
-            commentText: command.commentText
-          };
-          
-          // Process without going through chat again
-          const nextResult = await this.createActionPlan(nextActionParams.action, nextActionParams);
-          
-          // Combine results
-          if (nextResult && nextResult.message) {
-            combinedResult += ` ${nextResult.message}`;
-          }
-        }
-        
-        return { content: combinedResult };
-      } else {
-        // For destructive commands, we'll process just the first one now
-        // and keep the rest for later confirmations
-        return { content: result };
-      }
-    }
-    
-    return { content: result };
   }
   
   // Check if the input looks like a destructive action
@@ -302,6 +332,138 @@ export class NotionAgent {
     console.log(`Parsing action from: "${input}"`);
     
     try {
+      // Handle specific pattern: add content to a subpage
+      // Matches "add X in Y page in Z page" pattern
+      const subpagePattern = /\b(?:add|write)\s+(?:(?:a|an)\s+)?(.*?)\s+in\s+([^,]+?)\s+page\s+in\s+([^,]+?)(?:\s+page)?\b/i;
+      const subpageMatch = input.match(subpagePattern);
+      
+      if (subpageMatch) {
+        console.log('Detected content addition to a sub-page');
+        const contentWithFormat = subpageMatch[1].trim();
+        const subpageName = subpageMatch[2].trim();
+        const parentPageName = subpageMatch[3].trim();
+        
+        // Detect format type
+        let formatType = 'paragraph'; // Default format
+        let content = contentWithFormat;
+        
+        // Format detection
+        if (/(checklist|to-?do|task)s?\b/i.test(contentWithFormat)) {
+          formatType = 'to_do';
+          // Extract actual content
+          const toDoMatch = contentWithFormat.match(/(?:checklist|to-?do|task)s?\s+(?:to|for|about)?\s*(.*)/i);
+          if (toDoMatch) {
+            content = toDoMatch[1];
+          }
+          console.log(`Detected to-do format: "${content}"`);
+        } else if (/\b(?:bullet|list)\b/i.test(contentWithFormat)) {
+          formatType = 'bulleted_list_item';
+          const bulletMatch = contentWithFormat.match(/(?:bullet|list)\s+(?:about|for|to)?\s*(.*)/i);
+          if (bulletMatch) {
+            content = bulletMatch[1];
+          }
+          console.log(`Detected bullet format: "${content}"`);
+        } else if (/\bquote\b/i.test(contentWithFormat)) {
+          formatType = 'quote';
+          const quoteMatch = contentWithFormat.match(/quote\s+(?:about|of|from)?\s*(.*)/i);
+          if (quoteMatch) {
+            content = quoteMatch[1];
+          }
+          console.log(`Detected quote format: "${content}"`);
+        } else if (/\bcode\b/i.test(contentWithFormat)) {
+          formatType = 'code';
+          const codeMatch = contentWithFormat.match(/code\s+(?:to|for|about)?\s*(.*)/i);
+          if (codeMatch) {
+            content = codeMatch[1];
+          }
+          console.log(`Detected code format: "${content}"`);
+        }
+        
+        console.log(`Content: "${content}", Target: "${subpageName}" page in "${parentPageName}", Format: ${formatType}`);
+        
+        return {
+          action: 'write',
+          pageTitle: subpageName, // The actual target is the subpage
+          content: content,
+          parentPage: parentPageName,
+          formatType: formatType
+        };
+      }
+      
+      // Direct detection for page creation before other parsing
+      if (/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\b/i.test(input)) {
+        console.log('Direct detection of page creation at parseAction level');
+        
+        // Check if this is a multi-part command (create page AND do something else)
+        const multiCommandMatch = input.match(/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\s+(?:called\s+|named\s+)?["']?([^"'\s]+)["']?\s+(?:and|&)\s+/i);
+        
+        if (multiCommandMatch) {
+          console.log('Detected multi-part command with page creation and additional action');
+          const pageName = multiCommandMatch[1].trim();
+          
+          // Extract the parent page at the end
+          const parentMatch = input.match(/\bin\s+(?:the\s+)?["']?([^"',.]+?)["']?(?:\s+page)?\s*$/i);
+          const parentPage = parentMatch ? parentMatch[1].trim() : "TEST MCP";
+          
+          // Create a multi-command array
+          const commands = [];
+          
+          // Add the page creation command
+          commands.push({
+            action: 'create',
+            pageTitle: parentPage,
+            content: pageName,
+            formatType: 'page'
+          });
+          
+          // Extract the second part after "and"
+          const secondPartMatch = input.match(/\band\s+(.*?)(?:\s+in\s+|$)/i);
+          if (secondPartMatch) {
+            const secondAction = secondPartMatch[1].trim();
+            
+            // Add a basic write command for the second part
+            commands.push({
+              action: 'write',
+              pageTitle: pageName, // Target the newly created page
+              content: secondAction.replace(/^(?:add|write)\s+(?:text\s+)?/i, ''), // Remove action words
+              formatType: 'paragraph',
+              isMultiAction: true
+            });
+            
+            // Explicitly log the second command for clarity
+            console.log(`Second command targets the new page "${pageName}" with content: "${commands[1].content}"`);
+          }
+          
+          // Store the second command for later processing
+          if (commands.length > 1) {
+            this.state.set('remainingCommands', [commands[1]]);
+            console.log(`Stored "${commands[1].content}" command targeting "${pageName}" in remainingCommands queue`);
+          }
+          
+          // Return just the first command
+          console.log(`Detected multi-command page creation: "${pageName}" in "${parentPage}" with second action`);
+          return commands[0];
+        }
+        
+        // Simple page creation (no multi-part)
+        // Extract the page name
+        const pageNameMatch = input.match(/\b(?:create|make|add)(?:\s+a)?\s+(?:new\s+)?page\s+(?:called\s+|named\s+)?["']?([^"',.]+?)["']?(?:\s+in\b|\s+to\b|$)/i);
+        const pageName = pageNameMatch ? pageNameMatch[1].trim() : "New Page";
+        
+        // Extract the parent page
+        const parentMatch = input.match(/\bin\s+(?:the\s+)?["']?([^"',.]+?)["']?(?:\s+page)?\b/i);
+        const parentPage = parentMatch ? parentMatch[1].trim() : "TEST MCP";
+        
+        console.log(`Detected simple page creation: "${pageName}" in "${parentPage}"`);
+        
+        return {
+          action: 'create',
+          pageTitle: parentPage,
+          content: pageName,
+          formatType: 'page'
+        };
+      }
+
       // First, check for multi-command patterns regardless of section targeting
       const isMultiCommand = this.detectMultiCommand(input);
       if (isMultiCommand) {
@@ -420,7 +582,45 @@ export class NotionAgent {
         return parsedAction;
       }
       
-      // ENHANCEMENT: First try the LLM command parser with direct LLM call for more natural understanding
+      // ENHANCEMENT: First try the enhanced command handler if available
+      const enhancedHandler = this.get('enhancedCommandHandler');
+      if (enhancedHandler) {
+        try {
+          console.log('Using Enhanced Command Handler for natural language understanding');
+          const commands = await enhancedHandler.processCommand(input);
+          
+          if (commands && commands.length > 0) {
+            console.log('Enhanced Handler parsed commands:', commands);
+            
+            // Store any additional commands for later
+            if (commands.length > 1) {
+              this.state.set('remainingCommands', commands.slice(1));
+            }
+            
+            // Convert first command to the expected format
+            const command = commands[0];
+            return {
+              action: command.action || 'unknown',
+              pageTitle: command.primaryTarget,
+              content: command.content,
+              oldContent: command.oldContent,
+              newContent: command.newContent,
+              parentPage: command.secondaryTarget,
+              formatType: command.formatType,
+              sectionTitle: command.sectionTarget,
+              debug: command.debug || false,
+              isUrl: command.isUrl || false,
+              commentText: command.commentText,
+              urlFormat: command.urlFormat,
+              isMultiCommand: isMultiCommand
+            };
+          }
+        } catch (error) {
+          console.error('Error using Enhanced Command Handler, falling back to other methods:', error);
+        }
+      }
+      
+      // Fallback: Try the LLM command parser with direct LLM call
       if (this.openAiApiKey) {
         try {
           console.log('Using LLM Command Parser for natural language understanding');
@@ -777,123 +977,97 @@ export class NotionAgent {
     console.log(`Processing pending action: ${input}`);
     
     try {
-      // Load API token fresh each time
-      this.notionApiToken = process.env.NOTION_API_TOKEN || '';
-      console.log(`Using Notion API token (length: ${this.notionApiToken.length})`);
+      // First, if this looks like a multi-command, parse it as such
+      let isMultiCommand = false;
+      let actionList = [];
+      let remainingCommands = [];
       
-      // Check for API token
-      if (!this.notionApiToken && !this.isTestEnvironment) {
-        console.error("NOTION_API_TOKEN is not set in environment variables");
-        return "Error: Notion API token is not configured. Please set NOTION_API_TOKEN in your environment variables.";
-      }
-      
-      // DIRECT CHECK FOR SPECIAL CASE: Check this first before any parsing
-      const isMultiCommandChecklist = /add\s+.*?\s+in\s+checklist\s+and\s+.*?\s+in\s+checklist\s+too\s+in/i.test(input);
-      if (isMultiCommandChecklist && this.contextAwareHandler) {
-        console.log('DIRECT SPECIAL CASE MATCH: Processing multi-command checklist using context-aware handler');
-        
+      // Check if we should use multi-command parsing
+      if (this.multiCommandHandler && this.detectMultiCommand(input)) {
         try {
-          // Extract the page directly
-          const pageTarget = input.match(/checklist\s+too\s+in\s+(.*?)(?:$|\.)/i)?.[1]?.trim() || 'Personal thoughts';
-          console.log(`Extracted target page for multi-command checklist: "${pageTarget}"`);
+          console.log('Detecting multi-command, parsing with multi-command handler');
+          const commands = await this.multiCommandHandler.processCommand(input);
           
-          // Extract the first checklist item
-          const firstItemMatch = /add\s+(.*?)\s+in\s+checklist\s+and/i.exec(input);
-          const firstItem = firstItemMatch ? firstItemMatch[1].trim() : null;
-          
-          // Extract the second checklist item
-          const secondItemMatch = /and\s+(.*?)\s+in\s+checklist\s+too\s+in/i.exec(input);
-          const secondItem = secondItemMatch ? secondItemMatch[1].trim() : null;
-          
-          console.log(`EXTRACTED MULTI-COMMAND PARTS:
-               First item: "${firstItem}"
-               Second item: "${secondItem}"
-               Target page: "${pageTarget}"`);
-          
-          if (firstItem && secondItem) {
-            // Process each command separately
+          if (commands && commands.length > 0) {
+            console.log(`Detected ${commands.length} commands:`, commands);
             
-            // Create commands for the first and second items
-            const firstCommand = `add ${firstItem} to ${pageTarget} as checklist`;
-            const secondCommand = `add ${secondItem} to ${pageTarget} as checklist`;
+            // If we have multiple commands, set up the first one as the main action
+            // and store the rest for later processing
+            const firstCommand = commands[0];
             
-            console.log('Processing first command:', firstCommand);
-            const firstResult = await this.contextAwareHandler.processCommand(firstCommand);
-            
-            console.log('Processing second command:', secondCommand);
-            const secondResult = await this.contextAwareHandler.processCommand(secondCommand);
-            
-            // Combine the results
-            const combinedMessage = `Added to-do "${firstItem}" to page And Added to-do "${secondItem}" to page`;
-            console.log('Combined result:', combinedMessage);
-            
-            return combinedMessage;
+            if (firstCommand) {
+              isMultiCommand = true;
+              
+              // Convert to expected format for the first command
+              actionList.push({
+                action: firstCommand.action || 'write',
+                pageTitle: firstCommand.primaryTarget || 'TEST MCP',
+                content: firstCommand.content || '',
+                oldContent: firstCommand.oldContent,
+                newContent: firstCommand.newContent,
+                parentPage: firstCommand.secondaryTarget,
+                formatType: firstCommand.formatType || 'paragraph',
+                sectionTitle: firstCommand.sectionTarget,
+                debug: firstCommand.debug || false,
+                isUrl: firstCommand.isUrl || false,
+                commentText: firstCommand.commentText
+              });
+              
+              // Store remaining commands for later processing
+              if (commands.length > 1) {
+                remainingCommands = commands.slice(1);
+                console.log(`Storing ${remainingCommands.length} remaining commands for later processing`);
+                this.state.set('remainingCommands', remainingCommands);
+              }
+            }
           }
         } catch (error) {
-          console.error('Error in direct special case processing:', error);
-          // Continue with regular parsing if error
+          console.error('Error parsing multi-command:', error);
+          isMultiCommand = false;
         }
       }
       
-      // Parse the action
-      const parsedAction = await this.parseAction(input);
-      console.log('Parsed action:', parsedAction);
-      
-      if (!parsedAction || !parsedAction.action) {
-        return "Error processing your request: Failed to parse command";
+      // If not a multi-command or if multi-command parsing failed, use standard parsing
+      if (!isMultiCommand) {
+        console.log('Using standard action parsing');
+        const parsedAction = await this.parseAction(input);
+        actionList.push(parsedAction);
       }
       
-      // Special handling for context-aware commands
-      if (parsedAction.action === 'context_aware' && this.contextAwareHandler) {
-        try {
-          console.log('Using context-aware handler for execution');
-          
-          // Check if this is our special multi-command case
-          if (parsedAction.isMultiCommand) {
-            console.log('Detected multi-command flag in parsed action, passing direct command to context handler');
-          }
-          
-          const result = await this.contextAwareHandler.processCommand(input);
-          
-          if (result && result.success) {
-            return result.message || 'Command executed successfully with contextual awareness';
-          } else {
-            const errorMessage = result && result.message ? result.message : 'Unknown error in contextual command execution';
-            console.error('Context-aware handler error:', errorMessage);
-            return `Error: ${errorMessage}`;
-          }
-        } catch (contextError) {
-          console.error('Error in context-aware execution:', contextError);
-          return `Error processing section-targeted request: ${contextError.message}`;
-        }
-      }
-      
-      // FIX: Check if there are multiple commands from the LLM parser first
-      // This section needs to come before processing the primary command to ensure
-      // all commands are captured in case this is a multi-command scenario
-      const remainingCommands = this.state.get('remainingCommands');
+      console.log('Action list:', actionList);
       let finalResult = '';
       
-      // Main action processing for regular commands
-      let result;
-      try {
-        result = await this.createActionPlan(parsedAction.action, parsedAction);
-        finalResult = result.message;
-      } catch (actionError) {
-        console.error('Error executing action plan:', actionError);
-        return `Error processing your request: ${actionError instanceof Error ? actionError.message : 'Unknown error'}`;
+      // Process the main action(s)
+      for (const actionParams of actionList) {
+        try {
+          // Process this action
+          const result = await this.createActionPlan(actionParams.action, actionParams);
+          
+          // Build the result message
+          if (result && result.success) {
+            finalResult += result.message;
+          } else if (result) {
+            finalResult += `Failed: ${result.message}`;
+          } else {
+            finalResult += 'Action failed with unknown error';
+          }
+        } catch (actionError) {
+          console.error('Error in action execution:', actionError);
+          finalResult += `Error: ${actionError instanceof Error ? actionError.message : 'Unknown error'}`;
+        }
       }
       
-      // Now process any remaining commands
-      if (remainingCommands && remainingCommands.length > 0) {
-        console.log(`Processing ${remainingCommands.length} remaining commands from LLM parser`);
+      // Now process any remaining commands - CRITICAL FIX: Properly handle remaining commands
+      const remainingCmds = this.state.get('remainingCommands');
+      if (remainingCmds && remainingCmds.length > 0) {
+        console.log(`Processing ${remainingCmds.length} remaining commands from queue`);
         
-        // Process all remaining commands
-        for (const command of remainingCommands) {
+        // Process each remaining command sequentially
+        for (const command of remainingCmds) {
           console.log('Processing additional command:', command);
           
           try {
-            // Convert to expected format
+            // Convert to expected format for createActionPlan
             const nextActionParams = {
               action: command.action || 'write',
               pageTitle: command.primaryTarget || 'TEST MCP',
@@ -901,14 +1075,14 @@ export class NotionAgent {
               oldContent: command.oldContent,
               newContent: command.newContent,
               parentPage: command.secondaryTarget,
-              formatType: command.formatType || 'to_do',
+              formatType: command.formatType || 'paragraph',
               sectionTitle: command.sectionTarget,
               debug: command.debug || false,
               isUrl: command.isUrl || false,
               commentText: command.commentText
             };
             
-            // Process this command
+            // Process this command - IMPORTANT: Use await to ensure sequential execution
             const nextResult = await this.createActionPlan(nextActionParams.action, nextActionParams);
             
             // Add to final result
@@ -917,14 +1091,12 @@ export class NotionAgent {
             }
           } catch (cmdError) {
             console.error('Error processing additional command:', cmdError);
-            finalResult += ` Error with additional command: ${cmdError.message}`;
+            finalResult += ` Error with additional command: ${cmdError.message || 'Unknown error'}`;
           }
         }
         
-        // Clear the remaining commands
+        // Clear the remaining commands after processing
         this.state.set('remainingCommands', []);
-        
-        return finalResult;
       }
       
       return finalResult;
@@ -946,6 +1118,17 @@ export class NotionAgent {
       switch (action) {
         case 'write':
           return await this.handleWriteAction(params);
+          
+        case 'create': 
+          // Check if this is a page creation request
+          if (params.formatType === 'page' || 
+              params.content?.toLowerCase().includes('page') ||
+              params.pageTitle?.toLowerCase().includes('page')) {
+            return await this.handleCreatePageAction(params);
+          } else {
+            // For other creation types, treat as write
+            return await this.handleWriteAction(params);
+          }
         
         case 'update':
         case 'edit':
@@ -954,12 +1137,31 @@ export class NotionAgent {
         case 'delete':
         case 'remove':
           return await this.handleDeleteAction(params);
+          
+        case 'context_aware':
+          // Special handling for context-aware requests
+          // If it looks like a page creation request, handle it as such
+          if (params.formatType === 'page' || params.content?.toLowerCase().includes('page')) {
+            return await this.handleCreatePageAction(params);
+          } else {
+            // Otherwise, use normal write action
+            return await this.handleWriteAction(params);
+          }
         
         default:
           // For unrecognized actions, use the context-aware handler
           if (this.contextAwareHandler) {
             console.log('Using context-aware handler for unrecognized action');
-            const result = await this.contextAwareHandler.processCommand(params.content);
+            // Pass the parsed command object to the context handler instead of just the content
+            const parsedCommand = {
+              action: params.action || 'write',
+              primaryTarget: params.pageTitle,
+              content: params.content,
+              formatType: params.formatType || 'paragraph',
+              sectionTarget: params.sectionTitle
+            };
+            
+            const result = await this.contextAwareHandler.processCommand(parsedCommand);
             
             if (result && result.success) {
               return { 
@@ -979,6 +1181,81 @@ export class NotionAgent {
       return {
         success: false,
         message: `Error executing action: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
+    }
+  }
+  
+  /**
+   * Handle page creation action
+   */
+  private async handleCreatePageAction(params: any): Promise<{ success: boolean; message: string }> {
+    const { content, pageTitle } = params;
+    
+    // Determine the page title and parent page
+    const pageName = content || 'New Page';
+    const parentPageTitle = pageTitle?.replace(/\s+page$/i, '') || 'TEST MCP';
+    
+    try {
+      console.log(`Creating new page "${pageName}" in parent "${parentPageTitle}"`);
+      
+      // Find the parent page ID
+      const parentId = await this.findPageId(parentPageTitle);
+      if (!parentId) {
+        return { 
+          success: false, 
+          message: `Could not find parent page "${parentPageTitle}"` 
+        };
+      }
+      
+      // Create a new page in Notion
+      const response = await fetch(`${this.notionApiBaseUrl}/pages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          parent: {
+            type: 'page_id',
+            page_id: parentId
+          },
+          properties: {
+            title: {
+              title: [
+                {
+                  text: {
+                    content: pageName
+                  }
+                }
+              ]
+            }
+          },
+          children: []
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error creating page:', errorData);
+        return { 
+          success: false, 
+          message: `Error creating page: ${errorData.message || response.statusText}` 
+        };
+      }
+      
+      const responseData = await response.json();
+      console.log('Page creation response:', responseData);
+      
+      return {
+        success: true,
+        message: `Added page "${pageName}" to ${parentPageTitle}`
+      };
+    } catch (error) {
+      console.error('Error creating page:', error);
+      return {
+        success: false,
+        message: `Error creating page: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
@@ -1023,14 +1300,26 @@ Format type: "${formatType}"
 The response should be a single valid JSON object for a Notion block that can be directly used with the Notion API.
 Important: Only return the JSON object, nothing else.
 
+CRITICAL: All blocks MUST use 'rich_text' instead of 'text' in their structure.
+
 Example formats:
+- for "paragraph": use this exact structure:
+{
+  "type": "paragraph",
+  "paragraph": {
+    "rich_text": [{
+      "type": "text",
+      "text": { "content": "Your content here" }
+    }]
+  }
+}
+
 - for "to_do" or "checklist": use the to_do block type with checked: false
 - for "callout": use the callout block type with a light bulb emoji icon
 - for "bullet": use the bulleted_list_item block type
 - for "quote": use the quote block type
 - for "code": use the code block type with an appropriate language
 - for "heading": use the heading_1 block type with the proper rich_text structure
-- for any other format: choose the most appropriate Notion block type
 
 For HEADINGS, always use the following structure:
 {
@@ -1117,199 +1406,448 @@ Example: if content is "Buy milk" and format is "to_do", return:
     // Simple fallback mapping
     const normalizedFormat = (formatType || 'paragraph').toLowerCase();
     
+    let block;
+    
     if (normalizedFormat.includes('todo') || normalizedFormat.includes('checklist') || normalizedFormat.includes('task')) {
-      return {
-        type: 'to_do',
+      block = {
+        object: "block",
+        type: "to_do",
         to_do: {
-          rich_text: [{ type: 'text', text: { content } }],
+          rich_text: [{ 
+            type: "text", 
+            text: { content } 
+          }],
           checked: false
         }
       };
     } else if (normalizedFormat.includes('callout')) {
-      return {
-        type: 'callout',
+      block = {
+        object: "block",
+        type: "callout",
         callout: {
-          rich_text: [{ type: 'text', text: { content } }],
-          icon: { type: 'emoji', emoji: '💡' }
+          rich_text: [{ type: "text", text: { content } }],
+          icon: { type: "emoji", emoji: "💡" }
         }
       };
-    } else if (normalizedFormat.includes('heading') || normalizedFormat.includes('header') || normalizedFormat == 'h1') {
-      return {
-        type: 'heading_1',
+    } else if (normalizedFormat.includes('heading_1') || normalizedFormat.includes('header') || normalizedFormat == 'h1') {
+      block = {
+        object: "block",
+        type: "heading_1",
         heading_1: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
-    } else if (normalizedFormat.includes('heading_2') || normalizedFormat == 'h2' || normalizedFormat == 'subheading') {
-      return {
-        type: 'heading_2',
+    } else if (normalizedFormat.includes('heading_2') || normalizedFormat == 'h2') {
+      block = {
+        object: "block",
+        type: "heading_2",
         heading_2: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
     } else if (normalizedFormat.includes('heading_3') || normalizedFormat == 'h3') {
-      return {
-        type: 'heading_3',
+      block = {
+        object: "block",
+        type: "heading_3",
         heading_3: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
     } else if (normalizedFormat.includes('bullet') || normalizedFormat.includes('list_item')) {
-      return {
-        type: 'bulleted_list_item',
+      block = {
+        object: "block",
+        type: "bulleted_list_item",
         bulleted_list_item: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
     } else if (normalizedFormat.includes('code')) {
-      return {
-        type: 'code',
+      block = {
+        object: "block",
+        type: "code",
         code: {
-          rich_text: [{ type: 'text', text: { content } }],
-          language: 'plain text'
+          rich_text: [{ type: "text", text: { content } }],
+          language: "plain_text"
         }
       };
     } else if (normalizedFormat.includes('quote')) {
-      return {
-        type: 'quote',
+      block = {
+        object: "block",
+        type: "quote",
         quote: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
     } else {
-      return {
-        type: 'paragraph',
+      block = {
+        object: "block",
+        type: "paragraph",
         paragraph: {
-          rich_text: [{ type: 'text', text: { content } }]
+          rich_text: [{ type: "text", text: { content } }]
         }
       };
+    }
+    
+    // Add validation step as a final safeguard
+    return validateNotionBlock(block);
+  }
+  
+  /**
+   * Handle file upload to Notion with improved error handling and retries
+   */
+  private async uploadFileToNotion(file: Buffer, filename: string, maxRetries = 3): Promise<{ url: string; expiry_time: string }> {
+    let retryCount = 0;
+    let lastError: Error | null = null;
+    
+    while (retryCount < maxRetries) {
+      try {
+        console.log(`Uploading file to Notion: ${filename} (attempt ${retryCount + 1}/${maxRetries})`);
+        
+        // Step 1: Create upload URL
+        const createResponse = await fetch(`${this.notionApiBaseUrl}/files`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.notionApiToken}`,
+            'Notion-Version': '2022-06-28',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: filename
+          })
+        });
+
+        if (!createResponse.ok) {
+          const errorData = await createResponse.json().catch(() => ({}));
+          throw new Error(`Failed to create upload URL: ${createResponse.statusText} - ${JSON.stringify(errorData)}`);
+        }
+
+        const responseData = await createResponse.json();
+        if (!responseData.url || !responseData.expiry_time) {
+          throw new Error(`Invalid response from Notion API: missing url or expiry_time - ${JSON.stringify(responseData)}`);
+        }
+        
+        const { url: uploadUrl, expiry_time } = responseData;
+
+        // Step 2: Upload file to S3
+        console.log(`Got upload URL, uploading ${file.length} bytes to S3...`);
+        const uploadResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': file.length.toString()
+          },
+          body: file
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(`Failed to upload file: ${uploadResponse.statusText}`);
+        }
+
+        console.log('File upload successful');
+        return {
+          url: uploadUrl.split('?')[0], // Remove query parameters
+          expiry_time
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.error(`Error during file upload (attempt ${retryCount + 1}/${maxRetries}):`, lastError);
+        retryCount++;
+        
+        if (retryCount < maxRetries) {
+          // Exponential backoff with jitter
+          const delay = Math.random() * 1000 * Math.pow(2, retryCount);
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    throw lastError || new Error('Failed to upload file after multiple attempts');
+  }
+  
+  /**
+   * Create image block from uploaded file with improved error handling
+   */
+  private async createImageBlockFromUpload(file: Buffer, filename: string, caption?: string): Promise<any> {
+    try {
+      // Check if file is actually an image
+      if (!file || file.length === 0) {
+        throw new Error('Empty image file provided');
+      }
+      
+      // Simple validation of image format by checking first bytes
+      const isJPEG = file[0] === 0xFF && file[1] === 0xD8 && file[2] === 0xFF;
+      const isPNG = file[0] === 0x89 && file[1] === 0x50 && file[2] === 0x4E && file[3] === 0x47;
+      const isGIF = file[0] === 0x47 && file[1] === 0x49 && file[2] === 0x46;
+      const isSVG = file.toString('utf8', 0, 100).toLowerCase().includes('<svg');
+      
+      if (!(isJPEG || isPNG || isGIF || isSVG)) {
+        console.warn('File does not appear to be a valid image format, but continuing anyway');
+      }
+      
+      const { url, expiry_time } = await this.uploadFileToNotion(file, filename);
+      
+      return {
+        object: "block",
+        type: "image",
+        image: {
+          type: "file",
+          file: {
+            url,
+            expiry_time
+          },
+          caption: caption ? [{
+            type: "text",
+            text: {
+              content: caption
+            }
+          }] : []
+        }
+      };
+    } catch (error) {
+      console.error('Error creating image block:', error);
+      throw error;
     }
   }
   
   /**
-   * Handle write actions (create content)
+   * Create file block from uploaded file
+   */
+  private async createFileBlockFromUpload(file: Buffer, filename: string): Promise<any> {
+    const { url, expiry_time } = await this.uploadFileToNotion(file, filename);
+    
+    return {
+      object: "block",
+      type: "file",
+      file: {
+        type: "file",
+        file: {
+          url,
+          expiry_time
+        },
+        caption: [],
+        name: filename
+      }
+    };
+  }
+
+  /**
+   * Update handleWriteAction to handle mixed content types
    */
   private async handleWriteAction(params: any): Promise<{ success: boolean; message: string }> {
-    const { pageTitle, content, sectionTitle, formatType } = params;
-    
+    const { pageTitle, content, sectionTitle, formatType, file, parentPage } = params;
+
     if (!pageTitle) {
       return { success: false, message: 'No page specified' };
     }
-    
-    if (!content) {
-      return { success: false, message: 'No content provided' };
-    }
-    
+
     try {
-      console.log(`Writing to page: ${pageTitle}`);
-      console.log(`Content: ${content}`);
-      console.log(`Section: ${sectionTitle || 'None'}`);
-      console.log(`Format: ${formatType || 'paragraph'}`);
-      
-      // If section targeting, use context-aware handler
-      if (sectionTitle && this.contextAwareHandler) {
-        console.log('Using context-aware handler for section-targeted write');
-        
-        // Create command for context-aware handler
-        const commandText = `Add "${content}" as ${formatType || 'paragraph'} to ${sectionTitle} section in ${pageTitle} page`;
-        const result = await this.contextAwareHandler.processCommand(commandText);
-        
-        if (result && result.success) {
-          return { 
-            success: true, 
-            message: result.message || `Successfully added content to ${sectionTitle} section in ${pageTitle}` 
-          };
-        } else {
-          const errorMessage = result && result.message ? result.message : 'Unknown error in contextual write execution';
-          console.error('Context-aware handler error:', errorMessage);
-          return { success: false, message: errorMessage };
-        }
-      }
-      
-      // For non-section targeted writes, use the Notion API directly
-      console.log('Using direct Notion API for write operation');
+      console.log(`Writing to page: ${pageTitle}${parentPage ? ` in ${parentPage}` : ''}`);
       
       // Find the page ID first
-      const pageId = await this.findPageId(pageTitle);
-      if (!pageId) {
-        return { success: false, message: `Could not find a page named "${pageTitle}"` };
-      }
+      let pageId;
       
-      console.log(`Found page ID: ${pageId} for page "${pageTitle}"`);
-      
-      // Get appropriate block content for Notion API
-      let blockContent;
-      
-      // Try to use LLM to generate block, with fallback to basic block creator
-      try {
-        blockContent = await this.getNotionBlockFromLLM(content, formatType || 'paragraph');
+      // If we have a parent page, first search for it
+      if (parentPage) {
+        console.log(`This appears to be a subpage. First finding parent: ${parentPage}`);
+        const parentId = await this.findPageId(parentPage);
         
-        // Validate the block structure
-        if (blockContent.type && blockContent.type.startsWith('heading_')) {
-          const headingType = blockContent.type;
-          const headingData = blockContent[headingType];
+        if (!parentId) {
+          return { success: false, message: `Could not find parent page "${parentPage}"` };
+        }
+        
+        // Now search for the subpage by getting subpages of this parent
+        pageId = await this.findSubpageId(parentId, pageTitle);
+        
+        if (!pageId) {
+          return { success: false, message: `Could not find page "${pageTitle}" in "${parentPage}"` };
+        }
+        
+        console.log(`Found subpage "${pageTitle}" (${pageId}) in "${parentPage}"`);
+      } else {
+        // Regular page search
+        pageId = await this.findPageId(pageTitle);
+        if (!pageId) {
+          return { success: false, message: `Could not find a page named "${pageTitle}"` };
+        }
+      }
+
+      // Handle file upload if present
+      if (file) {
+        console.log('Processing file upload:', { 
+          filename: file.originalname, 
+          type: file.mimetype 
+        });
+
+        // Determine file type and create appropriate block
+        let block;
+        if (file.mimetype.startsWith('image/')) {
+          // For images, create an image block
+          block = await this.createImageBlockFromUpload(
+            file.buffer, 
+            file.originalname,
+            // Add caption if it's a clipboard image
+            file.originalname.startsWith('clipboard_') ? 'Clipboard Image' : undefined
+          );
+        } else {
+          // For other files, create a file block
+          block = await this.createFileBlockFromUpload(file.buffer, file.originalname);
+        }
+
+        // Validate the block to ensure it has all required properties
+        block = validateNotionBlock(block);
+
+        // If section is specified, use context-aware handler for placement
+        if (sectionTitle && this.contextAwareHandler) {
+          console.log('Using context-aware handler for file placement in section:', sectionTitle);
           
-          // Fix missing rich_text field in headings
-          if (headingData && !headingData.rich_text && headingData.text) {
-            console.log('Fixing heading structure: moving text to rich_text');
-            blockContent[headingType].rich_text = headingData.text;
-            delete blockContent[headingType].text;
-          } else if (headingData && !headingData.rich_text) {
-            console.log('Fixing heading structure: adding rich_text field');
-            blockContent[headingType].rich_text = [{ 
-              type: 'text', 
-              text: { content } 
-            }];
+          try {
+            const result = await this.contextAwareHandler.processCommand(
+              `Add ${file.mimetype.startsWith('image/') ? 'image' : 'file'} "${file.originalname}" to ${sectionTitle} section in ${pageTitle}`
+            );
+            
+            if (result && result.success) {
+              return { 
+                success: true, 
+                message: result.message || `Successfully added ${file.mimetype.startsWith('image/') ? 'image' : 'file'} to ${sectionTitle} section in ${pageTitle}` 
+              };
+            }
+          } catch (contextError) {
+            console.warn('Context-aware handler failed, falling back to direct append:', contextError);
           }
         }
-      } catch (blockError) {
-        console.error('Error getting block from LLM:', blockError);
-        blockContent = this.createBasicBlock(content, formatType || 'paragraph');
-      }
-      
-      // Append the block to the page
-      console.log(`Adding block to page ${pageId}:`, JSON.stringify(blockContent, null, 2));
-      
-      const response = await fetch(
-        `${this.notionApiBaseUrl}/blocks/${pageId}/children`,
-        {
+
+        // Append the block to the page
+        const response = await fetch(`${this.notionApiBaseUrl}/blocks/${pageId}/children`, {
           method: 'PATCH',
           headers: {
             'Authorization': `Bearer ${this.notionApiToken}`,
-            'Content-Type': 'application/json',
-            'Notion-Version': '2022-06-28'
+            'Notion-Version': '2022-06-28',
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            children: [blockContent]
+            children: [block]
           })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Error response from Notion API:', JSON.stringify(errorData, null, 2));
+          throw new Error(`Failed to append block: ${errorData.message || response.statusText}`);
         }
-      );
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Error in Notion API call:', errorData);
-        return { 
-          success: false, 
-          message: `Error adding content to Notion: ${errorData.message || response.statusText}` 
+
+        return {
+          success: true,
+          message: `Successfully uploaded ${file.mimetype.startsWith('image/') ? 'image' : 'file'} to ${pageTitle}`
         };
       }
-      
-      const respData = await response.json();
-      console.log('Notion API response:', JSON.stringify(respData, null, 2));
-      
-      // Get a readable description of what was added
-      const blockType = blockContent.type || 'content';
-      const readableType = blockType.replace('_', ' ').replace(/^\w/, c => c.toUpperCase());
-      
+
+      // Handle text content
+      if (content) {
+        // If section targeting, use context-aware handler
+        if (sectionTitle && this.contextAwareHandler) {
+          console.log('Using context-aware handler for section-targeted write');
+          
+          // If no format type specified, let the context handler determine it
+          const commandText = formatType ?
+            `Add "${content}" as ${formatType} to ${sectionTitle} section in ${pageTitle} page` :
+            `Add "${content}" to ${sectionTitle} section in ${pageTitle} page`;
+          
+          const result = await this.contextAwareHandler.processCommand(commandText);
+          
+          if (result && result.success) {
+            return { 
+              success: true, 
+              message: result.message || `Successfully added content to ${sectionTitle} section in ${pageTitle}` 
+            };
+          } else {
+            const errorMessage = result && result.message ? result.message : 'Unknown error in contextual write execution';
+            console.error('Context-aware handler error:', errorMessage);
+            return { success: false, message: errorMessage };
+          }
+        }
+        
+        // For non-section targeted writes, use the Notion API directly
+        console.log('Using direct Notion API for write operation');
+        
+        // If no format type specified, try to detect it using the format agent
+        let detectedFormatType = formatType;
+        if (!formatType && this.formatAgent) {
+          try {
+            detectedFormatType = await this.formatAgent.detectFormat(content);
+            console.log('Detected format type:', detectedFormatType);
+          } catch (formatError) {
+            console.warn('Format detection failed, using default:', formatError);
+            detectedFormatType = 'paragraph';
+          }
+        }
+        
+        // Get appropriate block content for Notion API
+        let blockContent;
+        try {
+          blockContent = await this.getNotionBlockFromLLM(content, detectedFormatType || 'paragraph');
+        } catch (blockError) {
+          console.error('Error getting block from LLM:', blockError);
+          blockContent = this.createBasicBlock(content, detectedFormatType || 'paragraph');
+        }
+        
+        // Validate the block to ensure it has all required properties
+        blockContent = validateNotionBlock(blockContent);
+        
+        // Append the block to the page
+        console.log(`Adding block to page ${pageId}:`, JSON.stringify(blockContent, null, 2));
+        
+        const response = await fetch(
+          `${this.notionApiBaseUrl}/blocks/${pageId}/children`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `Bearer ${this.notionApiToken}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            },
+            body: JSON.stringify({
+              children: [blockContent]
+            })
+          }
+        );
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('Error response from Notion API:', JSON.stringify(errorData, null, 2));
+          throw new Error(`Error adding content to Notion: ${errorData.message || response.statusText}`);
+        }
+        
+        const respData = await response.json();
+        console.log('Notion API response:', JSON.stringify(respData, null, 2));
+        
+        // Get a readable description of what was added
+        const blockType = blockContent.type || 'content';
+        const readableType = blockType.replace('_', ' ').replace(/^\w/, c => c.toUpperCase());
+        
+        // Return success with a clear message
+        if (parentPage) {
+          return {
+            success: true,
+            message: `Added text "${content}" to ${pageTitle} page in ${parentPage}`
+          };
+        } else {
+          return {
+            success: true,
+            message: `Added text "${content}" to ${pageTitle}`
+          };
+        }
+      }
+
       return {
-        success: true,
-        message: `Successfully wrote "${content}" to ${pageTitle}`
+        success: false,
+        message: 'No content or file provided'
       };
     } catch (error) {
       console.error('Error in handleWriteAction:', error);
       return {
         success: false,
-        message: `Error writing to page: ${error instanceof Error ? error.message : 'Unknown error'}`
+        message: `Error writing content: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
     }
   }
@@ -1430,6 +1968,91 @@ Example: if content is "Buy milk" and format is "to_do", return:
       success: true,
       message: `Successfully deleted content from ${params.pageTitle}`
     };
+  }
+  
+  /**
+   * Find a subpage by parent ID and subpage name
+   */
+  private async findSubpageId(parentId: string, subpageName: string): Promise<string | null> {
+    try {
+      console.log(`Searching for subpage "${subpageName}" in parent ${parentId}`);
+      
+      // Get the list of child blocks (which includes child pages)
+      const response = await fetch(`${this.notionApiBaseUrl}/blocks/${parentId}/children?page_size=100`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28'
+        }
+      });
+      
+      if (!response.ok) {
+        console.error(`Error searching for subpages: ${response.status}`);
+        return null;
+      }
+      
+      const blocksData = await response.json();
+      console.log(`Found ${blocksData.results ? blocksData.results.length : 0} child blocks in parent`);
+      
+      // Look for child page blocks
+      if (blocksData.results && blocksData.results.length > 0) {
+        for (const block of blocksData.results) {
+          if (block.type === 'child_page') {
+            const title = block.child_page?.title || '';
+            console.log(`Found child page: "${title}" (${block.id})`);
+            
+            if (title.toLowerCase().includes(subpageName.toLowerCase())) {
+              console.log(`Found matching subpage: "${title}" (${block.id})`);
+              return block.id;
+            }
+          }
+        }
+      }
+      
+      // If we didn't find by direct children, try searching via the API
+      console.log(`No direct child page match found, trying search API for "${subpageName}"`);
+      const searchResponse = await fetch(`${this.notionApiBaseUrl}/search`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          query: subpageName,
+          filter: {
+            value: 'page',
+            property: 'object'
+          }
+        })
+      });
+      
+      if (!searchResponse.ok) {
+        console.error(`Error searching for pages: ${searchResponse.status}`);
+        return null;
+      }
+      
+      const searchData = await searchResponse.json();
+      console.log(`Search returned ${searchData.results ? searchData.results.length : 0} results`);
+      
+      if (!searchData.results || searchData.results.length === 0) {
+        return null;
+      }
+      
+      // Find a page with matching title
+      for (const page of searchData.results) {
+        const title = this.extractPageTitle(page);
+        if (title && title.toLowerCase().includes(subpageName.toLowerCase())) {
+          console.log(`Found matching page in search: "${title}" (${page.id})`);
+          return page.id;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error finding subpage:', error);
+      return null;
+    }
   }
 }
 

@@ -7,7 +7,10 @@
  */
 
 import PageAnalyzer from './page-analyzer.js';
+import fetch from 'node-fetch';
 import { LLMCommandParser } from './llm-command-parser.js';
+import * as NotionBlocks from './notion-blocks.js';
+import { validateNotionBlock, validateToDoBlock } from './block-validator.js';
 
 class ContextAwareHandler {
   constructor(notionApiToken, openAiApiKey) {
@@ -16,6 +19,7 @@ class ContextAwareHandler {
     this.pageAnalyzer = new PageAnalyzer();
     this.llmCommandParser = openAiApiKey ? new LLMCommandParser(openAiApiKey) : null;
     this.notionApiBaseUrl = 'https://api.notion.com/v1';
+    this.pageCache = new Map(); // Cache page structures
   }
 
   /**
@@ -168,6 +172,15 @@ class ContextAwareHandler {
    */
   async processSingleCommand(parsedCommand, forceDaySection, lowerInput) {
     try {
+      // First, ensure we have the right structure with secondary/section targets
+      console.log('Processing command:', JSON.stringify(parsedCommand, null, 2));
+      
+      // ENHANCED: Handle secondaryTarget as sectionTarget if we don't already have one
+      if (!parsedCommand.sectionTarget && parsedCommand.secondaryTarget) {
+        console.log(`Command has secondaryTarget but no sectionTarget, using secondaryTarget: "${parsedCommand.secondaryTarget}"`);
+        parsedCommand.sectionTarget = parsedCommand.secondaryTarget;
+      }
+      
       // Apply direct fix if needed
       if (forceDaySection && !parsedCommand.sectionTarget) {
         console.log('*** APPLYING DIRECT FIX: Setting section target to "my day" ***');
@@ -202,9 +215,11 @@ class ContextAwareHandler {
       }
       
       // Step 2: Identify the target page
+      console.log(`Finding page ID for: "${parsedCommand.primaryTarget}"`);
       const pageId = await this.findPageId(parsedCommand.primaryTarget);
       
       if (!pageId) {
+        console.log(`Could not find page: "${parsedCommand.primaryTarget}"`);
         return { 
           success: false, 
           message: `Could not find a page named "${parsedCommand.primaryTarget}"` 
@@ -377,8 +392,15 @@ class ContextAwareHandler {
         }
       }
       
+      // Extract target page if present in the input for passing to fallback parser
+      let targetPage = null;
+      const pageMatch = input.match(/\bin\s+(?:the\s+)?(?:['"])?([^'",.]+?)(?:['"])?(?:\s+page)?\b/i);
+      if (pageMatch) {
+        targetPage = pageMatch[1]?.trim();
+      }
+      
       // If LLM parsing failed or no API key, fall back to rule-based parsing
-      return this.parseWithRules(input);
+      return this.parseWithRules(input, targetPage);
       
     } catch (error) {
       console.error('Error parsing command:', error);
@@ -398,24 +420,28 @@ class ContextAwareHandler {
    * @param {string} input - User input
    * @returns {Promise<Object|Array>} - Parsed command or array of commands
    */
-  parseWithRules(input) {
-    console.log('Using rule-based fallback parsing for:', input);
+  parseWithRules(input, originalTarget = null) {
+    console.log(`Using rule-based fallback parsing for: ${input}`);
     
     const lowerInput = input.toLowerCase();
     
     // Basic command structure
     let action = 'write';
-    let primaryTarget = 'TEST MCP';
+    let primaryTarget = originalTarget || 'Tasks'; // If we already know the target, use it instead of TEST MCP
     let content = input;
     let formatType = 'paragraph';
     let sectionTarget;
     let placementType = 'in'; // Default placement is 'in' the section
     
-    // Extract target page
-    const pageMatch = input.match(/\bin\s+(?:the\s+)?(?:['"])?([^'",.]+?)(?:['"])?(?:\s+page)?\b/i);
-    if (pageMatch) {
-      primaryTarget = pageMatch[1]?.trim();
-      console.log(`Detected target page: "${primaryTarget}"`);
+    // Only extract target page if not already provided
+    if (!originalTarget) {
+      const pageMatch = input.match(/\bin\s+(?:the\s+)?(?:['"])?([^'",.]+?)(?:['"])?(?:\s+page)?\b/i);
+      if (pageMatch) {
+        primaryTarget = pageMatch[1]?.trim();
+        console.log(`Detected target page: "${primaryTarget}"`);
+      }
+    } else {
+      console.log(`Using provided target page: "${primaryTarget}" instead of extracting from text`);
     }
     
     // Extract section target - enhanced to detect positioning
@@ -572,166 +598,102 @@ class ContextAwareHandler {
    * Execute a command with contextual awareness about the page structure
    */
   async executeContextualCommand(command, pageId, pageStructure, targetSection) {
-    // Set default format type based on page structure if not specified
-    if (!command.formatType && pageStructure && pageStructure.structure) {
-      command.formatType = pageStructure.structure.primaryContentType || 'paragraph';
-    }
+    console.log('Executing write command for content:', JSON.stringify(command.content));
+    console.log('Target section:', targetSection ? targetSection.title : 'None specified');
+    console.log('Placement type:', command.placementType);
     
-    console.log(`Executing ${command.action} command for content: "${command.content}"`);
-    console.log(`Target section: ${targetSection ? targetSection.title : 'None specified'}`);
-    console.log(`Placement type: ${command.placementType || 'in'}`);
-    
-    // Keep to-do format for pillow content but don't force section targeting
-    const lowerContent = command.content ? command.content.toLowerCase() : '';
-    if (lowerContent.includes('pillow') || lowerContent.includes('feathery')) {
-      console.log('Detected pillows content - forcing to_do format');
-      command.formatType = 'to_do';
-    }
-    
-    // Handle day-related content
-    const dayRelatedContent = lowerContent.includes('day');
-    
-    // Look for day sections if needed
-    if (!targetSection && dayRelatedContent) {
-      console.log('Content relates to "day" but no section found - looking for day sections');
+    // ENHANCED: Special handling for section targeting
+    // If we have a sectionTarget but no targetSection found, try one more search with modified criteria
+    if (command.sectionTarget && !targetSection && pageStructure && pageStructure.sections) {
+      console.log(`ENHANCED SEARCH: Section "${command.sectionTarget}" not found, trying fuzzy match`);
       
-      // If we have sections, look for day-related ones
-      if (pageStructure && pageStructure.sections && pageStructure.sections.length > 0) {
-        const daySection = pageStructure.sections.find(section => 
-          section.title.toLowerCase().includes('day')
-        );
-        
-        if (daySection) {
-          console.log(`Found day-related section: ${daySection.title}`);
-          targetSection = daySection;
+      const sectionName = command.sectionTarget.toLowerCase();
+      const sections = pageStructure.sections;
+      
+      // Try to find any section that has words from the target
+      const words = sectionName.split(/\s+/).filter(w => w.length > 2);
+      if (words.length > 0) {
+        for (const word of words) {
+          const fuzzyMatch = sections.find(section => 
+            section.title.toLowerCase().includes(word)
+          );
+          
+          if (fuzzyMatch) {
+            console.log(`Found fuzzy match for section using word "${word}": "${fuzzyMatch.title}"`);
+            targetSection = fuzzyMatch;
+            break;
+          }
         }
       }
     }
     
-    // Special handling for "below" placement - add an extra log
-    if (command.placementType === 'below') {
-      console.log(`PLACEMENT: Using "below" placement for ${targetSection ? targetSection.title : 'unknown'} section`);
-    }
+    const content = command.content;
+    const lowerContent = content.toLowerCase();
+    const dayRelatedContent = lowerContent.includes('day');
     
-    // Final check - log the target section details
-    if (targetSection) {
-      console.log(`Final target section: "${targetSection.title}" at position ${targetSection.startIndex}`);
-      
-      // Enhanced logging
-      console.log(`Page has ${pageStructure.sections.length} sections available`);
-      console.log(`Sections found:`);
-      pageStructure.sections.forEach(section => {
-        console.log(` - "${section.title}" (level ${section.level}, range: ${section.startIndex}-${section.endIndex})`);
-      });
-    }
-    
-    // Create the proper block type based on the command
+    // Create the appropriate block based on format type
     let block;
     
-    // Force content to be a string
-    const content = command.content ? String(command.content) : '';
+    // Check format type first
+    const formatType = command.formatType?.toLowerCase();
+    console.log('Format type from command:', formatType);
     
-    // Special handling for pillow order test case
-    if (lowerContent.includes('pillow') || lowerContent.includes('feathery')) {
-      console.log('SPECIAL OVERRIDE: Ensuring pillows content is a to-do block');
+    if (formatType === 'to_do' || formatType === 'todo' || formatType === 'checklist' || formatType === 'task') {
+      console.log('Creating to_do block for content:', content);
       block = {
         type: 'to_do',
         to_do: {
           rich_text: [{
             type: 'text',
-            text: { content: content }
+            text: { content }
           }],
           checked: false
         }
       };
-    }
-    
-    // Create the appropriate block type
-    if (command.formatType === 'to_do') {
-      console.log(`Created to-do block for content: ${content}`);
-      block = {
-        type: 'to_do',
-        to_do: {
-          rich_text: [{
-            type: 'text',
-            text: { content: content }
-          }],
-          checked: false
-        }
-      };
-    } else if (command.formatType === 'callout') {
-      console.log(`Created callout block for content: ${content}`);
-      block = {
-        type: 'callout',
-        callout: {
-          rich_text: [{
-            type: 'text',
-            text: { content: content }
-          }],
-          icon: { emoji: '📝' }
-        }
-      };
-    } else if (command.formatType === 'bulleted_list_item') {
-      console.log(`Created bullet list item for content: ${content}`);
-      block = {
-        type: 'bulleted_list_item',
-        bulleted_list_item: {
-          rich_text: [{
-            type: 'text',
-            text: { content: content }
-          }]
-        }
-      };
-    } else if (command.formatType === 'heading_1' || command.formatType === 'heading_2' || command.formatType === 'heading_3') {
-      console.log(`Created heading (${command.formatType}) for content: ${content}`);
-      block = {
-        type: command.formatType,
-        [command.formatType]: {
-          rich_text: [{
-            type: 'text',
-            text: { content: content }
-          }]
-        }
-      };
-    } else if (command.formatType === 'code') {
-      console.log(`Created code block for content: ${content}`);
+    } else if (content.startsWith('```')) {
+      // Code block handling
       block = {
         type: 'code',
         code: {
           rich_text: [{
             type: 'text',
-            text: { content: content }
+            text: { content }
           }],
           language: 'javascript'
         }
       };
     } else {
-      console.log(`Created default paragraph block for content: ${content}`);
+      console.log(`Creating block with format type ${formatType || 'paragraph'} for content: ${content}`);
       block = {
-        type: 'paragraph',
-        paragraph: {
+        type: formatType || 'paragraph',
+        [formatType || 'paragraph']: {
           rich_text: [{
             type: 'text',
-            text: { content: content }
+            text: { content }
           }]
         }
       };
+      
+      // If it's a todo-like command but format wasn't set properly, force it to to_do
+      if (lowerContent.includes('todo') || 
+          lowerContent.includes('task') ||
+          lowerContent.includes('checklist')) {
+        console.log('Force converting to to_do block due to content hints');
+        block = {
+          type: 'to_do',
+          to_do: {
+            rich_text: [{
+              type: 'text',
+              text: { content }
+            }],
+            checked: false
+          }
+        };
+      }
     }
     
-    // Special override for pillow order test case
-    if (content.toLowerCase().includes('pillow') || content.toLowerCase().includes('feathery')) {
-      console.log('SPECIAL OVERRIDE: Ensuring pillows content is a to-do block');
-      block = {
-        type: 'to_do',
-        to_do: {
-          rich_text: [{
-            type: 'text',
-            text: { content: content }
-          }],
-          checked: false
-        }
-      };
-    }
+    // Validate the block to ensure it has all required properties
+    block = validateNotionBlock(block);
     
     // Execute the action
     let result;
@@ -1139,6 +1101,90 @@ class ContextAwareHandler {
     } catch (error) {
       console.error('Error appending to page:', error);
       return { success: false, message: `Error appending to page: ${error.message}` };
+    }
+  }
+
+  /**
+   * Append a block to a page
+   */
+  async appendBlockToPage(pageId, block, successMessage) {
+    try {
+      console.log(`Appending blocks to page ${pageId}`);
+      
+      // Validate the block to ensure it has all required properties
+      block = validateNotionBlock(block);
+      
+      // Debug output to help troubleshoot incorrect block structures
+      console.log('Block structure being sent to Notion:', JSON.stringify(block, null, 2));
+      
+      const response = await fetch(`${this.notionApiBaseUrl}/blocks/${pageId}/children`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          children: [block]
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error appending to page:', errorData);
+        throw new Error(errorData.message || response.statusText);
+      }
+      
+      console.log('>>> FINAL RESULT MESSAGE:', successMessage);
+      return { success: true, message: successMessage };
+    } catch (error) {
+      console.error('Error appending to page:', error);
+      return { 
+        success: false, 
+        message: `Error adding content: ${error.message}`
+      };
+    }
+  }
+  
+  /**
+   * Append a block to a section
+   */
+  async appendBlockToSection(sectionId, block, successMessage) {
+    try {
+      console.log(`Appending blocks to section ${sectionId}`);
+      
+      // Validate the block to ensure it has all required properties
+      block = validateNotionBlock(block);
+      
+      // Debug output to help troubleshoot incorrect block structures
+      console.log('Block structure being sent to Notion:', JSON.stringify(block, null, 2));
+      
+      const response = await fetch(`${this.notionApiBaseUrl}/blocks/${sectionId}/children`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${this.notionApiToken}`,
+          'Notion-Version': '2022-06-28',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          children: [block]
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error appending to section:', errorData);
+        throw new Error(errorData.message || response.statusText);
+      }
+      
+      console.log('>>> FINAL RESULT MESSAGE:', successMessage);
+      return { success: true, message: successMessage };
+    } catch (error) {
+      console.error('Error appending to section:', error);
+      return { 
+        success: false, 
+        message: `Error adding content to section: ${error.message}`
+      };
     }
   }
 }

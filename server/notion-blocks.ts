@@ -510,178 +510,422 @@ export function createComplexToggle(toggleTitle: string, contentItems: Array<{ty
 }
 
 /**
- * Process content into appropriate blocks based on format type
+ * Creates an image block with an external URL with validation
  */
-export function processContentByFormat(content: string, formatType?: string): any[] {
-  if (!formatType) {
-    // Auto-detect
-    if (content.match(/^https?:\/\//i)) {
-      return [createBookmarkBlock(content.trim())];
-    }
-    
-    if (content.includes('```')) {
-      return [detectLanguageAndCreateCodeBlock(content)];
-    }
-    
-    // Default to paragraph(s)
-    if (content.includes('\n')) {
-      return content
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .map(line => createParagraphBlock(line));
-    }
-    
-    return [createParagraphBlock(content)];
+export function createImageBlock(url: string, caption?: string) {
+  // Basic URL validation
+  if (!url) {
+    throw new Error('URL is required for image block');
   }
   
-  const format = formatType.toLowerCase();
+  if (!url.match(/^https?:\/\/.+/i)) {
+    throw new Error('Invalid URL format for image block. Must be http(s)://...');
+  }
   
-  // Handle special case: Toggle with header format
-  const toggleRegex = /^(.*?):\s*([\s\S]*)$/;
-  if (format === 'toggle' && toggleRegex.test(content)) {
-    const match = content.match(toggleRegex);
-    if (match) {
-      const toggleHeader = match[1].trim();
-      const toggleContent = match[2].trim();
-      
-      // Special handling for code blocks in toggles
-      if (toggleContent.includes('```')) {
-        // Create a single code block for the toggle content
-        return [createToggleBlock(toggleHeader, [detectLanguageAndCreateCodeBlock(toggleContent)])];
+  return {
+    object: "block",
+    type: "image",
+    image: {
+      type: "external",
+      external: {
+        url: url
+      },
+      caption: caption ? [{
+        type: "text",
+        text: {
+          content: caption
+        }
+      }] : []
+    }
+  };
+}
+
+/**
+ * Creates a file block with an external URL with validation
+ */
+export function createFileBlock(url: string, name: string) {
+  // Basic URL and name validation
+  if (!url) {
+    throw new Error('URL is required for file block');
+  }
+  
+  if (!url.match(/^https?:\/\/.+/i)) {
+    throw new Error('Invalid URL format for file block. Must be http(s)://...');
+  }
+  
+  if (!name) {
+    // Generate a name from the URL if not provided
+    try {
+      const urlObj = new URL(url);
+      name = urlObj.pathname.split('/').pop() || 'file';
+    } catch (e) {
+      name = 'file';
+    }
+  }
+  
+  return {
+    object: "block",
+    type: "file",
+    file: {
+      type: "external",
+      external: {
+        url: url
+      },
+      caption: [],
+      name: name
+    }
+  };
+}
+
+/**
+ * Creates an uploaded image block (internal file)
+ */
+export function createUploadedImageBlock(url: string, expiry_time: string, caption?: string) {
+  if (!url) {
+    throw new Error('URL is required for uploaded image block');
+  }
+  
+  if (!expiry_time) {
+    throw new Error('Expiry time is required for uploaded image block');
+  }
+  
+  return {
+    object: "block",
+    type: "image",
+    image: {
+      type: "file",
+      file: {
+        url,
+        expiry_time
+      },
+      caption: caption ? [{
+        type: "text",
+        text: {
+          content: caption
+        }
+      }] : []
+    }
+  };
+}
+
+/**
+ * Creates an uploaded file block (internal file)
+ */
+export function createUploadedFileBlock(url: string, expiry_time: string, name: string) {
+  if (!url) {
+    throw new Error('URL is required for uploaded file block');
+  }
+  
+  if (!expiry_time) {
+    throw new Error('Expiry time is required for uploaded file block');
+  }
+  
+  if (!name) {
+    name = 'Uploaded file';
+  }
+  
+  return {
+    object: "block",
+    type: "file",
+    file: {
+      type: "file",
+      file: {
+        url,
+        expiry_time
+      },
+      caption: [],
+      name
+    }
+  };
+}
+
+/**
+ * Validates and ensures a Notion block has all required properties
+ * This helps prevent "undefined" errors when sending blocks to the Notion API
+ */
+export function validateNotionBlock(block: any): any {
+  if (!block) {
+    // Create a default paragraph block if none exists
+    return {
+      object: "block",
+      type: "paragraph",
+      paragraph: {
+        rich_text: [{ type: "text", text: { content: "" } }]
+      }
+    };
+  }
+
+  // Ensure the block has the object property
+  if (!block.object) {
+    block.object = "block";
+  }
+
+  // Ensure the block has a type
+  if (!block.type) {
+    console.warn('Block missing type property, defaulting to paragraph');
+    block.type = "paragraph";
+    block.paragraph = {
+      rich_text: [{ type: "text", text: { content: "" } }]
+    };
+    return block;
+  }
+
+  // Make sure the block has the corresponding property for its type
+  if (!block[block.type]) {
+    console.warn(`Block of type ${block.type} missing corresponding property, adding default`);
+    block[block.type] = {};
+  }
+
+  // Ensure rich_text array exists for text-based blocks
+  const textBasedTypes = [
+    'paragraph', 'heading_1', 'heading_2', 'heading_3', 
+    'bulleted_list_item', 'numbered_list_item', 'to_do', 
+    'toggle', 'quote', 'callout', 'code'
+  ];
+
+  if (textBasedTypes.includes(block.type)) {
+    if (!block[block.type].rich_text) {
+      console.warn(`Block of type ${block.type} missing rich_text property, adding default`);
+      block[block.type].rich_text = [{ type: "text", text: { content: "" } }];
+    } else if (!Array.isArray(block[block.type].rich_text)) {
+      // Convert to array if not already
+      const content = block[block.type].rich_text;
+      block[block.type].rich_text = [{ type: "text", text: { content: content?.toString() || "" } }];
+    }
+    
+    // Ensure each rich_text entry has proper structure
+    block[block.type].rich_text = block[block.type].rich_text.map((textItem: any) => {
+      if (!textItem.type) {
+        textItem.type = "text";
       }
       
-      // If it looks like there are items inside (comma-separated, bullet points, etc)
-      if (toggleContent.includes('-') || toggleContent.includes(',') || 
-          toggleContent.includes('\n')) {
-        let childBlocks = [];
-        
-        if (toggleContent.includes('-')) {
-          // Process as bullet list
-          childBlocks = toggleContent
-            .split('-')
-            .map(item => item.trim())
-            .filter(item => item.length > 0)
-            .map(item => createBulletedListItemBlock(item));
-        } else if (toggleContent.includes('\n')) {
-          // Check if this looks like a code block without explicit markers
-          if ((toggleContent.match(/\n\s{2,}[\w(]/m) || toggleContent.match(/\n\t+[\w(]/m)) && 
-              (toggleContent.includes('{') || toggleContent.includes('function') || 
-               toggleContent.includes('def ') || toggleContent.includes('class '))) {
-            
-            // Treat this as a code block
-            childBlocks = [detectLanguageAndCreateCodeBlock(toggleContent)];
-          } else {
-            // Process as paragraphs
-            childBlocks = toggleContent
-              .split('\n')
-              .map(item => item.trim())
-              .filter(item => item.length > 0)
-              .map(item => createParagraphBlock(item));
-          }
-        } else {
-          // Process as comma-separated paragraphs
-          childBlocks = toggleContent
-            .split(',')
-            .map(item => item.trim())
-            .filter(item => item.length > 0)
-            .map(item => createParagraphBlock(item));
+      if (!textItem.text) {
+        textItem.text = { content: "" };
+      } else if (typeof textItem.text === 'string') {
+        textItem.text = { content: textItem.text };
+      } else if (!textItem.text.content && textItem.text.content !== '') {
+        textItem.text.content = "";
+      }
+      
+      return textItem;
+    });
+  }
+
+  // Handle specific block types that need additional properties
+  switch (block.type) {
+    case 'to_do':
+      if (block.to_do.checked === undefined) {
+        block.to_do.checked = false;
+      }
+      break;
+    
+    case 'toggle':
+      // Handle children property for toggles
+      if (block.toggle.children) {
+        if (!Array.isArray(block.toggle.children)) {
+          block.toggle.children = [block.toggle.children];
         }
         
-        return [createToggleBlock(toggleHeader, childBlocks)];
+        // Validate each child block
+        block.toggle.children = block.toggle.children.map((child: any) => validateNotionBlock(child));
+      }
+      break;
+    
+    case 'code':
+      if (!block.code.language) {
+        block.code.language = "plain_text";
+      }
+      break;
+    
+    case 'callout':
+      if (!block.callout.icon) {
+        block.callout.icon = { type: "emoji", emoji: "💡" };
+      }
+      break;
+    
+    case 'image':
+      // Ensure image has type and source properties
+      if (!block.image) {
+        block.image = { type: "external", external: { url: "" } };
+      } else if (!block.image.type) {
+        block.image.type = block.image.file ? "file" : "external";
       }
       
-      // Simple toggle with just content
-      return [createToggleBlock(toggleHeader, [createParagraphBlock(toggleContent)])];
-    }
+      if (block.image.type === "external" && !block.image.external) {
+        block.image.external = { url: "" };
+      }
+      
+      if (block.image.type === "file" && !block.image.file) {
+        block.image.file = { url: "", expiry_time: new Date(Date.now() + 24*60*60*1000).toISOString() };
+      }
+      
+      // Fix caption format if it exists but is in wrong format
+      if (block.image.caption && !Array.isArray(block.image.caption)) {
+        const caption = block.image.caption.toString();
+        block.image.caption = [{ type: "text", text: { content: caption } }];
+      }
+      break;
+    
+    case 'file':
+      // Ensure file has type and source properties
+      if (!block.file) {
+        block.file = { type: "external", external: { url: "" } };
+      } else if (!block.file.type) {
+        block.file.type = block.file.file ? "file" : "external";
+      }
+      
+      if (block.file.type === "external" && !block.file.external) {
+        block.file.external = { url: "" };
+      }
+      
+      if (block.file.type === "file" && !block.file.file) {
+        block.file.file = { url: "", expiry_time: new Date(Date.now() + 24*60*60*1000).toISOString() };
+      }
+      
+      // Ensure name exists
+      if (!block.file.name) {
+        block.file.name = "Unnamed file";
+      }
+      
+      // Fix caption format if it exists but is in wrong format
+      if (block.file.caption && !Array.isArray(block.file.caption)) {
+        const caption = block.file.caption.toString();
+        block.file.caption = [{ type: "text", text: { content: caption } }];
+      }
+      break;
+  }
+
+  return block;
+}
+
+/**
+ * Process content into proper block format based on format type
+ * Enhanced with validation and type detection
+ */
+export function processContentByFormat(content: string, formatType: string): any[] {
+  if (!content) {
+    throw new Error('Content is required');
   }
   
-  // Regular format processing
-  switch (format) {
+  // Normalize format type and handle variations in naming
+  const normalizedFormat = (formatType || '').toLowerCase().trim();
+  
+  // Create a block based on format type
+  let block;
+  
+  // Add intelligent format detection if none specified
+  if (!formatType || formatType === 'auto') {
+    if (content.startsWith('# ')) {
+      block = createHeading1Block(content.substring(2).trim());
+    } else if (content.startsWith('## ')) {
+      block = createHeading2Block(content.substring(3).trim());
+    } else if (content.startsWith('### ')) {
+      block = createHeading3Block(content.substring(4).trim());
+    } else if (content.match(/^```[\s\S]*```$/)) {
+      // Extract code and language from markdown code block
+      const match = content.match(/^```(\w+)?\s*([\s\S]*?)```$/);
+      const language = match?.[1] || 'plain_text';
+      const code = match?.[2]?.trim() || content;
+      block = createCodeBlock(code, language);
+    } else if (content.match(/^>\s+.*$/m)) {
+      block = createQuoteBlock(content.replace(/^>\s+/m, '').trim());
+    } else if (content.match(/^-\s+\[\s*\]\s+.*$/m)) {
+      block = createToDoBlock(content.replace(/^-\s+\[\s*\]\s+/m, '').trim(), false);
+    } else if (content.match(/^-\s+\[x\]\s+.*$/mi)) {
+      block = createToDoBlock(content.replace(/^-\s+\[x\]\s+/mi, '').trim(), true);
+    } else if (content.match(/^-\s+.*$/m)) {
+      block = createBulletedListItemBlock(content.replace(/^-\s+/m, '').trim());
+    } else if (content.match(/^💡\s+.*$/m)) {
+      block = createCalloutBlock(content.replace(/^💡\s+/m, '').trim());
+    } else {
+      // Default to paragraph if no patterns match
+      block = createParagraphBlock(content);
+    }
+  } else {
+    // If format type is specified, use appropriate block creator
+    switch (normalizedFormat) {
+      case 'paragraph':
+      case 'text':
+      case 'plain':
+        block = createParagraphBlock(content);
+        break;
+        
     case 'heading':
-    case 'heading_1':
     case 'heading1':
+      case 'heading_1':
     case 'h1':
     case 'title':
-      return [createHeading1Block(content)];
+        block = createHeading1Block(content);
+        break;
       
-    case 'heading_2':
     case 'heading2':
+      case 'heading_2':
     case 'h2':
-    case 'subheading':
     case 'subtitle':
-      return [createHeading2Block(content)];
+        block = createHeading2Block(content);
+        break;
       
-    case 'heading_3':
     case 'heading3':
+      case 'heading_3':
     case 'h3':
-      return [createHeading3Block(content)];
+        block = createHeading3Block(content);
+        break;
       
     case 'bullet':
     case 'bulleted':
-    case 'bulleted_list_item':
     case 'bulleted_list':
+      case 'bulleted_list_item':
     case 'list':
-      if (content.includes(',') || content.includes('\n')) {
-        return createBulletedList(content);
-      }
-      return [createBulletedListItemBlock(content)];
-      
+        block = createBulletedListItemBlock(content);
+        break;
+        
+      case 'number':
     case 'numbered':
-    case 'numbered_list_item':
     case 'numbered_list':
-    case 'ordered':
+      case 'numbered_list_item':
     case 'ordered_list':
-      return [createNumberedListItemBlock(content)];
+        block = createNumberedListItemBlock(content);
+        break;
       
     case 'todo':
-    case 'to-do':
     case 'to_do':
+      case 'to-do':
     case 'checklist':
     case 'task':
-    case 'tasks':
-      if (content.includes(',') || content.includes('\n')) {
-        return createToDoList(content);
-      }
-      return [createToDoBlock(content)];
+        block = createToDoBlock(content, false);
+        break;
       
     case 'toggle':
     case 'dropdown':
-    case 'collapsible':
-      return [createToggleBlock(content)];
-      
-    case 'quote':
-    case 'blockquote':
-      return [createQuoteBlock(content)];
+        block = createToggleBlock(content);
+        break;
       
     case 'code':
     case 'codeblock':
     case 'code_block':
-    case 'snippet':
-      return [detectLanguageAndCreateCodeBlock(content)];
+        block = createCodeBlock(content);
+        break;
+        
+      case 'quote':
+      case 'blockquote':
+        block = createQuoteBlock(content);
+        break;
       
     case 'callout':
     case 'note':
-    case 'alert':
-    case 'warning':
-      return [createCalloutBlock(content)];
-      
-    case 'bookmark':
-    case 'url':
-    case 'link':
-    case 'website':
-      return [createBookmarkBlock(content)];
-      
-    case 'divider':
-    case 'separator':
-    case 'hr':
-    case 'line':
-      return [createDividerBlock()];
+      case 'notification':
+        block = createCalloutBlock(content);
+        break;
       
     default:
-      // If format is unrecognized, default to paragraph
-      return [createParagraphBlock(content)];
+        console.warn(`Unknown format type: ${formatType}, defaulting to paragraph`);
+        block = createParagraphBlock(content);
+        break;
   }
+  }
+  
+  // Return the block as an array to match the expected type, ensuring validation
+  return [validateNotionBlock(block)];
 }
 
 /**
@@ -738,4 +982,30 @@ export function detectCodeLanguage(codeContent: string): string {
   
   // Default if no specific language detected
   return "plain_text";
+}
+
+// Add an explicit export for the validation function at the end of the file
+// Create a new validated version of createToDoBlock
+export function createValidatedToDoBlock(content: string, checked: boolean = false): any {
+  const block = createToDoBlock(content, checked);
+  
+  // Ensure the block has the object property
+  if (!block.object) {
+    block.object = "block";
+  }
+  
+  // Ensure checked property is defined
+  if (block.to_do.checked === undefined) {
+    block.to_do.checked = false;
+  }
+  
+  // Ensure rich_text is properly structured
+  if (!block.to_do.rich_text || !Array.isArray(block.to_do.rich_text)) {
+    block.to_do.rich_text = [{ 
+      type: "text", 
+      text: { content: content || "" } 
+    }];
+  }
+  
+  return block;
 } 

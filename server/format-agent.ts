@@ -192,7 +192,7 @@ export class FormatAgent {
     console.log(`Using direct block formatting with hint "${formatHint || 'none'}" and hasMultipleLines=${hasMultipleLines}`);
     
     // Use our specialized block processing functions
-    return NotionBlocks.processContentByFormat(content, formatHint);
+    return NotionBlocks.processContentByFormat(content, formatHint || '');
   }
   
   /**
@@ -262,6 +262,62 @@ export class FormatAgent {
     
     // Default to single paragraph
     return [NotionBlocks.createParagraphBlock(content)];
+  }
+
+  async detectFormat(content: string): Promise<string> {
+    // Check for code blocks or pattern
+    if (content.includes('```') || (content.match(/\n\s{2,}/) && (content.includes('{') || content.includes('function')))) {
+      return 'code';
+    }
+    
+    // URL detection
+    if (content.match(/^https?:\/\//i)) {
+      return 'bookmark';
+    }
+    
+    // Heading detection
+    if (content.match(/^#\s+/)) {
+      return 'heading_1';
+    }
+    if (content.match(/^##\s+/)) {
+      return 'heading_2';
+    }
+    if (content.match(/^###\s+/)) {
+      return 'heading_3';
+    }
+    
+    // Bulleted list detection
+    if (content.match(/^-\s+/)) {
+      return 'bulleted_list_item';
+    }
+    
+    // Number list detection
+    if (content.match(/^\d+\.\s+/)) {
+      return 'numbered_list_item';
+    }
+    
+    // Quote detection
+    if (content.match(/^>\s+/)) {
+      return 'quote';
+    }
+    
+    // Toggle detection
+    if (content.includes(':') && content.split(':')[0].trim().length > 0) {
+      return 'toggle';
+    }
+    
+    // Default
+    return 'paragraph';
+  }
+
+  async formatRichContent(content: string, formatHint?: string): Promise<any> {
+    try {
+      const blockArray = NotionBlocks.processContentByFormat(content, formatHint || '');
+      return blockArray[0];
+    } catch (error) {
+      console.error('Error formatting rich content:', error);
+      return NotionBlocks.createParagraphBlock(content);
+    }
   }
 }
 
