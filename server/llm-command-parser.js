@@ -130,99 +130,169 @@ For URL commands, ensure you:
    * @returns {Promise<Array>} Array of parsed command objects
    */
   async parseCommand(input) {
-    // Validate API key first
-    await this.validateApi();
-    
     try {
       console.log(`LLM command parser processing: "${input}"`);
       
-      // Ensure the system prompt contains the word 'json' for response_format compatibility
-      let enhancedPrompt = this.systemPrompt;
-      if (!enhancedPrompt.includes('json')) {
-        enhancedPrompt = `${enhancedPrompt}\nRespond with a valid JSON object.`;
+      // Validate the API key
+      if (!this.openAiApiKey) {
+        throw new Error('No API key provided for LLM Command Parser');
       }
       
-      const requestBody = {
-        model: 'gpt-4o',
-        messages: [
-          { role: 'system', content: enhancedPrompt },
-          { role: 'user', content: input }
-        ],
-        temperature: 0,
-        response_format: { type: 'json_object' }
-      };
+      // Prepare the prompt for the LLM with the instructions
+      const prompt = this.createPrompt(input);
       
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.openAiApiKey}`
-        },
-        body: JSON.stringify(requestBody)
-      });
+      // Make the API call to the LLM
+      const response = await this.callLLM(prompt);
       
-      if (!response.ok) {
-        const errorData = await response.text();
-        console.error(`OpenAI API error (${response.status}): ${errorData}`);
-        throw new Error(`OpenAI API error: ${response.status}`);
+      // Parse the LLM response
+      const parsedCommands = this.parseResponse(response, input);
+      
+      // ENHANCEMENT: Post-process the commands to handle nested page structures
+      if (parsedCommands && parsedCommands.length > 0) {
+        for (let i = 0; i < parsedCommands.length; i++) {
+          const cmd = parsedCommands[i];
+          
+          // Handle "X page in Y page" pattern for better section/page targeting
+          if (cmd.primaryTarget && cmd.primaryTarget.toLowerCase().includes(' page in ')) {
+            const parts = cmd.primaryTarget.split(' page in ');
+            if (parts.length === 2) {
+              // The part after "in" is the main page
+              const mainPage = parts[1].replace(' page', '').trim();
+              // The part before "in" is the section
+              const section = parts[0].trim();
+              
+              console.log(`Detected nested page structure: Section "${section}" in Page "${mainPage}"`);
+              
+              // Update the command with the corrected page and section targets
+              cmd.primaryTarget = mainPage;
+              cmd.sectionTarget = section;
+              
+              // For added compatibility, also set secondaryTarget
+              if (!cmd.secondaryTarget) {
+                cmd.secondaryTarget = section;
+              }
+            }
+          }
+          
+          // Also check for "X in Y page" pattern
+          else if (cmd.primaryTarget && cmd.primaryTarget.toLowerCase().includes(' in ')) {
+            const parts = cmd.primaryTarget.split(' in ');
+            if (parts.length === 2 && parts[1].toLowerCase().includes('page')) {
+              // The part after "in" is the main page
+              const mainPage = parts[1].replace(' page', '').trim();
+              // The part before "in" is the section
+              const section = parts[0].trim();
+              
+              console.log(`Detected alt nested page structure: Section "${section}" in Page "${mainPage}"`);
+              
+              // Update the command with the corrected page and section targets
+              cmd.primaryTarget = mainPage;
+              cmd.sectionTarget = section;
+              
+              // For added compatibility, also set secondaryTarget
+              if (!cmd.secondaryTarget) {
+                cmd.secondaryTarget = section;
+              }
+            }
+          }
+        }
       }
       
-      const data = await response.json();
-      const content = data.choices[0].message.content;
-      
-      try {
-        const parsedContent = JSON.parse(content);
-        
-        // Handle different response structures
-        let commands = [];
-        
-        // Case 1: Direct array of commands
-        if (Array.isArray(parsedContent)) {
-          commands = parsedContent;
-        } 
-        // Case 2: Object with 'commands' property
-        else if (parsedContent.commands && Array.isArray(parsedContent.commands)) {
-          commands = parsedContent.commands;
-        }
-        // Case 3: Object with 'actions' property (complex multi-part command)
-        else if (parsedContent.actions && Array.isArray(parsedContent.actions)) {
-          commands = parsedContent.actions;
-        }
-        // Case 4: Nested actions inside a single command
-        else if (parsedContent.action && parsedContent.actions && Array.isArray(parsedContent.actions)) {
-          commands = parsedContent.actions;
-        }
-        // Case 5: Single command object
-        else if (parsedContent.action || parsedContent.primaryTarget) {
-          commands = [parsedContent];
-        }
-        // Case 6: Nested actions in the first array element
-        else if (Array.isArray(parsedContent) && 
-                parsedContent.length > 0 && 
-                parsedContent[0].actions && 
-                Array.isArray(parsedContent[0].actions)) {
-          commands = parsedContent[0].actions;
-        }
-        
-        console.log(`LLM parser identified ${commands.length} commands:`, JSON.stringify(commands, null, 2));
-        return commands;
-      } catch (error) {
-        console.error('Error parsing LLM response:', error);
-        console.error('Raw content:', content);
-        return [{
-          action: 'write',
-          primaryTarget: 'TEST',
-          content: 'Failed to parse command: ' + input,
-          error: true
-        }];
-      }
+      console.log(`LLM parser identified ${parsedCommands.length} commands:`, parsedCommands);
+      return parsedCommands;
     } catch (error) {
       console.error('Error in LLM command parser:', error);
-      // Fall back to a simple command structure
+      throw error;
+    }
+  }
+
+  /**
+   * Create a prompt for the LLM with instructions
+   */
+  createPrompt(input) {
+    return {
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: this.systemPrompt },
+        { role: 'user', content: input }
+      ],
+      temperature: 0,
+      response_format: { type: 'json_object' }
+    };
+  }
+
+  /**
+   * Call the LLM with the provided prompt
+   */
+  async callLLM(prompt) {
+    // Validate API key first
+    await this.validateApi();
+  
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.openAiApiKey}`
+      },
+      body: JSON.stringify(prompt)
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error(`OpenAI API error (${response.status}): ${errorData}`);
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
+
+  /**
+   * Parse the LLM response into structured commands
+   */
+  parseResponse(content, originalInput) {
+    try {
+      const parsedContent = JSON.parse(content);
+      
+      // Handle different response structures
+      let commands = [];
+      
+      // Case 1: Direct array of commands
+      if (Array.isArray(parsedContent)) {
+        commands = parsedContent;
+      }
+      // Case 2: Object with 'commands' property
+      else if (parsedContent.commands && Array.isArray(parsedContent.commands)) {
+        commands = parsedContent.commands;
+      }
+      // Case 3: Object with 'actions' property (complex multi-part command)
+      else if (parsedContent.actions && Array.isArray(parsedContent.actions)) {
+        commands = parsedContent.actions;
+      }
+      // Case 4: Nested actions inside a single command
+      else if (parsedContent.action && parsedContent.actions && Array.isArray(parsedContent.actions)) {
+        commands = parsedContent.actions;
+      }
+      // Case 5: Single command object
+      else if (parsedContent.action || parsedContent.primaryTarget) {
+        commands = [parsedContent];
+      }
+      // Case 6: Nested actions in the first array element
+      else if (Array.isArray(parsedContent) && 
+               parsedContent.length > 0 && 
+               parsedContent[0].actions && 
+               Array.isArray(parsedContent[0].actions)) {
+        commands = parsedContent[0].actions;
+      }
+      
+      return commands;
+    } catch (error) {
+      console.error('Error parsing LLM response:', error);
+      console.error('Raw content:', content);
       return [{
         action: 'write',
         primaryTarget: 'TEST',
-        content: input,
+        content: 'Failed to parse command: ' + originalInput,
         error: true
       }];
     }
@@ -460,7 +530,7 @@ For URL commands, ensure you:
       formatType: this.detectFormatType(input)
     }];
   }
-  
+
   /**
    * Detect the format type from the input text
    */
